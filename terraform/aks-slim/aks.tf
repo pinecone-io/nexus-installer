@@ -1,8 +1,7 @@
 # The slim-install AKS cluster.
 #
-# BYO-mirror on purpose: single vanilla system pool (NO nexus-role labels/taints, NO extra
-# pools), single-AZ, Azure CNI Overlay, workload identity + OIDC issuer enabled so the
-# Nexus workload UAMI can federate to in-cluster service accounts (storage.tf).
+# BYO-mirror on purpose: single vanilla system pool (no nexus-role labels/taints, no extra
+# pools), single-AZ, Azure CNI Overlay, workload identity + OIDC issuer enabled.
 
 resource "azurerm_kubernetes_cluster" "this" {
   name                = local.cluster_name

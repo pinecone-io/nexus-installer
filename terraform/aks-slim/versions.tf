@@ -13,13 +13,13 @@ terraform {
     }
   }
 
-  # Dev uses local state (mirrors the deliberate LOCAL-backend choice on this
-  # workstream). To share state, uncomment and point at an Azure blob container:
+  # Local state by default. To share state across operators, uncomment and point at
+  # an Azure blob container:
   #
   # backend "azurerm" {
   #   resource_group_name  = "..."
   #   storage_account_name = "..."
   #   container_name       = "tfstate"
-  #   key                  = "aks-dev.tfstate"
+  #   key                  = "aks-slim.tfstate"
   # }
 }

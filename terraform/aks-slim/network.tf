@@ -1,7 +1,6 @@
-# Resource group, VNet, and the single AKS node subnet.
-# Deliberately minimal vs the prod BYOC cell: no NAT gateway / static egress IPs,
-# no Postgres-delegated subnet, no private-link subnet. Egress goes through the
-# AKS standard load balancer (outbound_type = loadBalancer in aks.tf).
+# Resource group, VNet, and the single AKS node subnet — deliberately minimal: no NAT
+# gateway / static egress IPs, no delegated or private-link subnets. Egress uses the AKS
+# standard load balancer.
 
 resource "azurerm_resource_group" "this" {
   name     = local.rg_name
@@ -17,9 +16,8 @@ resource "azurerm_virtual_network" "this" {
   tags                = local.tags
 }
 
-# Node subnet. Under Azure CNI Overlay the pods live on pod_cidr (off-subnet), so a
-# /27 here is sufficient (#1571). A Microsoft.Storage service endpoint lets the nodes
-# reach the blob account privately (mirrors the prod cell).
+# Node subnet. Under Azure CNI Overlay pods live off-subnet, so a /27 is sufficient. The
+# Microsoft.Storage service endpoint lets nodes reach the blob account privately.
 resource "azurerm_subnet" "aks" {
   name                 = "snet-aks"
   resource_group_name  = azurerm_resource_group.this.name

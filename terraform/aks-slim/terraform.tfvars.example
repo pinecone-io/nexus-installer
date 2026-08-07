@@ -1,5 +1,5 @@
 # Copy to terraform.tfvars and adjust. terraform.tfvars is gitignored.
-# subscription_id is read from ARM_SUBSCRIPTION_ID if left unset (source .byoc.azure.local.env).
+# subscription_id is read from ARM_SUBSCRIPTION_ID if left unset.
 
 # subscription_id = "00000000-0000-0000-0000-000000000000"
 location = "westus3"
@@ -9,20 +9,20 @@ location = "westus3"
 name_prefix = "nexus-slim"
 environment = "dev"
 
-# Pin to the customer's target once #1577 settles it. Null = AKS default.
+# Pin to the customer's target version once known. Null = AKS default.
 # kubernetes_version = "1.31"
 
 node_count   = 2
 node_vm_size = "Standard_D8s_v5"
 
-# Overlay lets a /27 node subnet suffice (#1571).
+# Overlay lets a /27 node subnet suffice.
 aks_subnet_prefix = "10.224.0.0/27"
 
 # Storage + workload identity (set enable_storage_identity = false to bring your own).
 enable_storage_identity = true
 blob_container_names    = ["nexus"]
 
-# Add once the Helm release namespace + service account are fixed (Avi's #1570).
+# Add once the Helm release namespace + service account are fixed.
 # The chart installs single-namespace; service_account = pinecone.serviceAccount.name.
 # workload_federated_credentials = [
 #   { name = "nexus-blob", namespace = "nexus", service_account = "nexus" },

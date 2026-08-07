@@ -7,14 +7,14 @@ variable "subscription_id" {
 }
 
 variable "location" {
-  description = "Azure region. westus3/centralus are validated; eastus/westus2 fail on SKU/zone."
+  description = "Azure region. Some regions reject D-family SKUs or zones; verify before changing."
   type        = string
   default     = "westus3"
 }
 
 # ---- Naming ---------------------------------------------------------------
 # Resources are named <type>-<name_prefix>-<environment> (e.g. rg-nexus-slim-dev).
-# "slim" is the deployment config; environment is the per-instance identifier.
+# environment is a per-instance knob so one module stands up dev/staging/prod without renaming.
 
 variable "name_prefix" {
   description = "Deployment-config name prefix baked into every resource name."
@@ -35,12 +35,14 @@ variable "resource_group_name" {
 }
 
 variable "tags" {
-  description = "Base tags applied to every resource (environment is merged in automatically)."
+  description = <<-EOT
+    Extra tags the installer wants on every taggable resource. Merged on top of the
+    baseline (config, managed-by, environment), so setting this augments rather than
+    replaces those. Azure does not support tags on subnets, role assignments, federated
+    credentials, or storage containers — those resources stay untagged.
+  EOT
   type        = map(string)
-  default = {
-    config     = "slim"
-    managed-by = "terraform"
-  }
+  default     = {}
 }
 
 # ---- Cluster --------------------------------------------------------------
@@ -59,9 +61,8 @@ variable "dns_prefix" {
 
 variable "kubernetes_version" {
   description = <<-EOT
-    AKS Kubernetes version (e.g. "1.31"). Null lets AKS pick its default supported
-    version. Pin to the customer's target version once #1577 settles it; the cluster
-    must mirror the customer's real version.
+    AKS Kubernetes version (e.g. "1.31"). Null lets AKS pick its default supported version.
+    Pin to the customer's target version so the cluster mirrors their real environment.
   EOT
   type        = string
   default     = null
@@ -74,17 +75,17 @@ variable "sku_tier" {
 }
 
 # ---- Node pool (deliberately vanilla — mirrors a BYO customer cluster) -----
-# NO nexus-role labels/taints and NO extra pools: the cluster must exercise the
-# empty-nodeSelector path (#1562). A nexus-role pool here would hide that bug.
+# No nexus-role labels/taints and no extra pools: the cluster must exercise the
+# empty-nodeSelector scheduling path. A nexus-role pool here would hide that bug.
 
 variable "node_count" {
-  description = "Fixed node count for the single system pool. Provisional pending load sizing (#1574)."
+  description = "Fixed node count for the single system pool. Provisional pending load sizing."
   type        = number
   default     = 2
 }
 
 variable "node_vm_size" {
-  description = "VM size for the system pool. 2x D8s_v5 = 16 vCPU / 64 GiB. Provisional (#1574)."
+  description = "VM size for the system pool. 2x D8s_v5 = 16 vCPU / 64 GiB. Provisional pending load sizing."
   type        = string
   default     = "Standard_D8s_v5"
 }
@@ -102,14 +103,14 @@ variable "node_zones" {
 }
 
 variable "max_pods" {
-  description = "Max pods per node. 250 is the Overlay default and the #1571 assumption."
+  description = "Max pods per node. 250 is the Overlay default."
   type        = number
   default     = 250
 }
 
 # ---- Networking (Azure CNI Overlay) ---------------------------------------
-# Overlay puts pods on pod_cidr (off-subnet), so a /27 node subnet is sufficient
-# (the #1571 result). /27 is the documented floor.
+# Overlay puts pods on pod_cidr (off-subnet), so a /27 node subnet is sufficient.
+# /27 is the documented floor.
 
 variable "vnet_address_space" {
   description = "VNet address space."
@@ -118,7 +119,7 @@ variable "vnet_address_space" {
 }
 
 variable "aks_subnet_prefix" {
-  description = "Node subnet prefix. /27 is the documented floor under Overlay (#1571)."
+  description = "Node subnet prefix. /27 is the documented floor under Overlay."
   type        = string
   default     = "10.224.0.0/27"
 }
@@ -169,10 +170,10 @@ variable "workload_federated_credentials" {
     Kubernetes service accounts via the AKS OIDC issuer. Each entry creates one credential
     with subject system:serviceaccount:<namespace>:<service_account>.
 
-    These MUST match the Helm release namespace and the service account the umbrella chart
+    These must match the Helm release namespace and the service account the umbrella chart
     creates (the chart installs single-namespace; SA defaults to pinecone.serviceAccount.name).
-    The Azure workload-identity SA annotations are Avi's #1570 lane — leave this empty to
-    stand up the UAMI + storage now and add the binding once the SA name is fixed at install.
+    Leave empty to stand up the UAMI + storage now and add the binding once the SA name is
+    fixed at install.
   EOT
   type = list(object({
     name            = string
@@ -183,8 +184,8 @@ variable "workload_federated_credentials" {
 }
 
 # ---- Optional ingress -----------------------------------------------------
-# Validate via `kubectl port-forward svc/nexus-gateway 80`. Flip this on to add the
-# AKS managed ingress (app routing) so it can double as the customer ingress reference (#1572).
+# Validate via `kubectl port-forward svc/nexus-gateway 80`. Flip this on to add the AKS
+# managed ingress (app routing) so it can double as the customer ingress reference.
 
 variable "enable_web_app_routing" {
   description = "Enable the AKS web_app_routing (managed NGINX) add-on. Off for port-forward validation."
