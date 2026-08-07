@@ -61,7 +61,8 @@ resource "azurerm_kubernetes_cluster" "this" {
   depends_on = [azurerm_role_assignment.aks_subnet_network_contributor]
 
   lifecycle {
-    # AKS bumps the patch version and rotates node images out of band; don't fight it.
-    ignore_changes = [kubernetes_version, default_node_pool[0].orchestrator_version]
+    # Node image/patch rotates out of band — ignore that churn. kubernetes_version stays
+    # authoritative (pinned via var); no auto-upgrade channel is configured, so it won't drift.
+    ignore_changes = [default_node_pool[0].orchestrator_version]
   }
 }
