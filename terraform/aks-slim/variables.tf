@@ -61,12 +61,12 @@ variable "dns_prefix" {
 
 variable "kubernetes_version" {
   description = <<-EOT
-    AKS Kubernetes version, pinned to a minor (e.g. "1.34"); AKS selects the latest patch.
+    AKS Kubernetes version, pinned to a minor (e.g. "1.35"); AKS selects the latest patch.
     Set to the customer's target so the cluster mirrors their real environment. Null lets
     AKS pick its own default supported version.
   EOT
   type        = string
-  default     = "1.34"
+  default     = "1.35"
 }
 
 variable "sku_tier" {
