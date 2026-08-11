@@ -11,9 +11,9 @@ variable "storage_account_prefix" {
   type        = string
 }
 
-variable "container_names" {
-  description = "Blob containers to create."
-  type        = list(string)
+variable "container_prefix" {
+  description = "Stem the seven Nexus blob containers derive from (<stem>-db plus six <stem>-nexus-*). Feeds the chart's blob.abs.container, which is a stem/prefix, not a single container name."
+  type        = string
 }
 
 variable "aks_subnet_id" {

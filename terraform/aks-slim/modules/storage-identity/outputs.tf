@@ -3,8 +3,13 @@ output "storage_account_name" {
   value       = azurerm_storage_account.nexus.name
 }
 
+output "container_prefix" {
+  description = "Blob container stem -> chart blob.abs.container (a stem/prefix, not one container)."
+  value       = var.container_prefix
+}
+
 output "container_names" {
-  description = "Created blob containers -> chart blob.abs.container."
+  description = "The seven blob containers provisioned from the stem (informational)."
   value       = [for c in azurerm_storage_container.nexus : c.name]
 }
 

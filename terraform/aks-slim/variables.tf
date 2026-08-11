@@ -148,7 +148,7 @@ variable "dns_service_ip" {
 # account + identity can disable this and wire their own into the chart's blob.abs.
 
 variable "enable_storage_identity" {
-  description = "Create the Blob storage account, container(s), Nexus workload UAMI, role, and federated creds."
+  description = "Create the Blob storage account, the seven Nexus data-path containers, the Nexus workload UAMI, role, and federated creds."
   type        = bool
   default     = true
 }
@@ -159,10 +159,16 @@ variable "storage_account_prefix" {
   default     = null
 }
 
-variable "blob_container_names" {
-  description = "Blob containers to create for Nexus (chart blob.abs.container points at one of these)."
-  type        = list(string)
-  default     = ["nexus"]
+variable "blob_container_prefix" {
+  description = <<-EOT
+    Stem the seven Nexus blob containers derive from: <stem>-db plus six <stem>-nexus-*
+    (source, knowledge, archive, traces, snapshots, library). The suffixes are a fixed
+    product contract, so the operator supplies only the stem. Feeds the chart's
+    blob.abs.container, which is itself a stem/prefix, not a single container name.
+    Null -> <name_prefix>-<environment>.
+  EOT
+  type        = string
+  default     = null
 }
 
 variable "workload_federated_credentials" {

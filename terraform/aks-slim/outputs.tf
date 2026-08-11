@@ -28,8 +28,13 @@ output "blob_storage_account" {
   value       = one(module.storage_identity[*].storage_account_name)
 }
 
-output "blob_containers" {
-  description = "Blob containers -> chart blob.abs.container."
+output "blob_container" {
+  description = "Blob container stem -> chart blob.abs.container (a stem/prefix, not one container)."
+  value       = one(module.storage_identity[*].container_prefix)
+}
+
+output "blob_container_names" {
+  description = "The seven blob containers provisioned from the stem (informational; the module creates them, no manual step needed)."
   value       = one(module.storage_identity[*].container_names)
 }
 

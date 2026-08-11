@@ -1,9 +1,25 @@
-# Blob storage account + container(s), the Nexus workload user-assigned identity, its
-# Storage Blob Data Contributor grant, and the workload-identity federated credentials.
+# Blob storage account + the seven containers the Nexus data path requires, the Nexus
+# workload user-assigned identity, its Storage Blob Data Contributor grant, and the
+# workload-identity federated credentials.
 #
 # The umbrella chart consumes these via blob.abs.{account,container} plus the workload
 # identity SA annotation (client_id). Everything here is optional at the root (a customer
 # can bring their own account/identity and skip this module).
+
+# All seven DB blob stores (DATA/DOCS/BACKUP/WAL/JANITOR/INTERNAL/GLACIER) share the single
+# <stem>-db container — their keys never collide, so the DB needs one container, not seven.
+locals {
+  container_suffixes = [
+    "db",
+    "nexus-source",
+    "nexus-knowledge",
+    "nexus-archive",
+    "nexus-traces",
+    "nexus-snapshots",
+    "nexus-library",
+  ]
+  container_names = [for s in local.container_suffixes : "${var.container_prefix}-${s}"]
+}
 
 resource "random_string" "suffix" {
   length  = 6
@@ -45,7 +61,7 @@ resource "azurerm_storage_account" "nexus" {
 }
 
 resource "azurerm_storage_container" "nexus" {
-  for_each              = toset(var.container_names)
+  for_each              = toset(local.container_names)
   name                  = each.value
   storage_account_id    = azurerm_storage_account.nexus.id
   container_access_type = "private"
