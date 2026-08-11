@@ -9,7 +9,7 @@ module "storage_identity" {
   resource_group_name    = azurerm_resource_group.this.name
   location               = var.location
   storage_account_prefix = local.storage_prefix
-  container_names        = var.blob_container_names
+  container_prefix       = local.container_prefix
   aks_subnet_id          = azurerm_subnet.aks.id
 
   # Workload identity federates against the cluster's OIDC issuer.

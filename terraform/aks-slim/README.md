@@ -26,8 +26,13 @@ names. Any individual name can still be overridden (`resource_group_name`, `clus
 - User-assigned control-plane identity, pre-granted `Network Contributor` on the subnet (required
   for a BYO subnet; avoids the system-assigned chicken-and-egg).
 - **Optional** (`enable_storage_identity`, default on) storage + workload-identity sub-module:
-  a StorageV2 blob account + container(s), the Nexus workload identity, its `Storage Blob Data
-  Contributor` grant, and per-namespace/service-account federated credentials.
+  a StorageV2 blob account + the **seven** blob containers the Nexus data path requires, the
+  Nexus workload identity, its `Storage Blob Data Contributor` grant, and
+  per-namespace/service-account federated credentials. The seven containers are derived from a
+  single stem (`blob_container_prefix`): `<stem>-db` (the whole DB data plane shares this one
+  container) plus six `<stem>-nexus-*` (`source`, `knowledge`, `archive`, `traces`, `snapshots`,
+  `library`). The suffix set is a fixed product contract — the operator supplies only the stem,
+  so no container is hand-enumerated and no manual container-creation step is needed.
 
 ## Prerequisites
 
@@ -64,8 +69,13 @@ After apply, feed the outputs into the umbrella chart's Azure Blob (`blob.abs`) 
 | Output | Chart value |
 |---|---|
 | `blob_storage_account` | `blob.abs.account` |
-| `blob_containers[*]` | `blob.abs.container` |
+| `blob_container` | `blob.abs.container` (a **stem**, not one container — the chart derives the seven names from it) |
 | `workload_identity_client_id` | workload-identity service-account annotation |
+
+The seven containers themselves (`blob_container_names`, informational) are created by this
+module, so the chart's data path is ready as soon as `terraform apply` completes — there is no
+separate container-creation step. (nexus #1665 will rename the chart value `blob.abs.container`
+→ `containerPrefix`; the `blob_container` output name should follow once it lands.)
 
 The `workload_federated_credentials` variable must match the Helm **release namespace** and the
 **service account** the chart creates (single-namespace install; SA = `pinecone.serviceAccount.name`).
