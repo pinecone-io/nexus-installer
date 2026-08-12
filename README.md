@@ -4,6 +4,11 @@ Self-hosted Nexus installer — deploy Pinecone Nexus into a **customer-operated
 Kubernetes cluster** (in your own data center or your own cloud account). This is the
 self-hosted counterpart to Pinecone-managed BYOC (Pulumi) and the fully managed cloud.
 
+> **Nexus requires a Pinecone Enterprise plan.** The container images and OCI chart this
+> installer deploys are distributed by Pinecone to Enterprise customers — Pinecone provides
+> the release bundle and the registry access it mirrors from. Talk to your Pinecone account
+> team before you begin.
+
 ## Contents
 
 - `install/` — the **customer-runnable install toolkit**: fill one inputs file
