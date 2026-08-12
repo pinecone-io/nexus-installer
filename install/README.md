@@ -10,9 +10,9 @@ invariants (embedding dimension, container names, registry override, workload
 identity) otherwise produces a green `helm install` that boot-panics or fails on
 first ingest; here those mismatches **fail at preflight, before install**.
 
-You can read every script before running anything. Nothing here reaches a cluster or
-a registry until you run the install/mirror step, and `--dry-run` renders the whole
-plan touching nothing.
+You can read every script before running anything. Nothing here reaches a cluster
+until you run the install step, and `install.sh --dry-run` renders the whole plan
+touching nothing.
 
 ---
 
@@ -25,7 +25,7 @@ plan touching nothing.
 | `preflight.py` | Validates the consistency invariants. Static by default (values only, no cloud); `--live` adds cluster/Azure checks. **This is the core value.** |
 | `create-secrets.sh` | Idempotently creates the namespace, the registry pull Secret, and (shared-key only) the storage-key Secret, from env-var references. Never echoes a value. |
 | `install.sh` | Orchestrates preflight → secrets → `helm install`. `--dry-run` renders the full plan without touching anything. |
-| `mirror.sh` | Copies the image bundle + the OCI chart from Pinecone's registry into yours, keyed off the bundle tag. |
+| `image-manifest.sh` | Prints the exact images + OCI chart the install pulls (writes `generated/manifest.txt`), which `preflight --live` then verifies. Copies nothing — staging them in your registry is your pipeline's job. |
 | `remint-dbslim.sh` | Local-chart helper for a non-default embedding dimension / fresh index id (see "OCI vs local-chart path"). |
 | `tf-to-inputs.sh` | Emits the storage/identity half of `customer.yaml` from the `aks-slim` Terraform outputs. |
 
@@ -39,8 +39,10 @@ Before running anything:
 - **A cluster.** Kubernetes 1.35, ≥ 2 amd64 nodes, a default StorageClass, and node
   egress to your registry, storage account, and model endpoints. Greenfield? The
   optional `terraform/aks-slim` module in this repo stands up a conforming AKS cluster.
-- **A registry mirror.** The image bundle + the OCI chart copied under one base path
-  in your ACR/Artifactory, plus a pull credential. `mirror.sh` does the copy.
+- **A registry.** The image bundle + the OCI chart available under one base path in
+  your ACR/Artifactory, plus a pull credential — staged by your own pipeline (an
+  active copy) or served by a pull-through remote. `image-manifest.sh --list` prints
+  exactly what must be present.
 - **Azure Blob storage.** One StorageV2 account and its **seven containers** (the stack
   does not create them). The optional `terraform/aks-slim` module provisions them for
   you; otherwise create them before install. Names derive from your stem: `<stem>-db`
@@ -50,8 +52,8 @@ Before running anything:
   embedding `text-embedding-3-small`, and the rerank deployment named literally
   `rerank-v3.5` (even when it serves a newer Cohere rerank model). **The embedding
   model's dimension fixes the index dimension and is immutable after install.**
-- **Tooling:** `kubectl`, `helm`, `python3` + PyYAML, `openssl`; `az` and `skopeo` for
-  the live checks / mirror.
+- **Tooling:** `kubectl`, `helm`, `python3` + PyYAML, `openssl`; `az` for the live
+  preflight checks.
 
 ## Quick start
 
@@ -66,24 +68,26 @@ export NEXUS_STORAGE_KEY=...               # storage.storageKeyEnv (shared_key o
 export NEXUS_LLM_KEY=...                   # inference.llmKeyEnv / embeddingKeyEnv
 export NEXUS_RERANK_KEY=...                # inference.rerankKeyEnv
 
-# 1. Mirror the bundle into your registry (list first, then copy):
-./mirror.sh --list
-./mirror.sh                                # or --dry-run to preview the commands
-
-# 2. Generate overlays + validate (no cluster access needed):
+# 1. Generate overlays + validate (no cluster access needed):
 python3 gen-values.py
 python3 preflight.py                       # static invariants; fix any FAIL before continuing
-python3 preflight.py --live                # optional: containers/images/identity in the cloud
 
-# 3. Dry-run the whole install (touches nothing):
+# 2. List the images + chart the install pulls, and make sure they are present in your
+#    registry — staged by your own pipeline (an active copy) or served by a pull-through
+#    remote. This copies nothing.
+./image-manifest.sh --list                 # add --chart-path <chart> for exact refs
+
+# 3. Optional live checks (containers, image presence, identity in the cloud):
+python3 preflight.py --live
+
+# 4. Dry-run the whole install (touches nothing), then install for real:
 ./install.sh --dry-run
-
-# 4. Install for real:
 ./install.sh
 ```
 
-`install.sh` regenerates the overlays and re-runs preflight itself, so step 2 is
-optional before step 3/4 — it's there so you can inspect the artifacts first.
+`install.sh` regenerates the overlays and re-runs the static preflight itself, so
+steps 1–3 are optional before step 4 — they're there so you can inspect the artifacts
+and confirm your registry first.
 
 ## Verify the install
 

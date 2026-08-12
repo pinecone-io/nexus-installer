@@ -27,11 +27,11 @@
 # cluster name after `az aks get-credentials`.
 kubeContext: aks-acme-nexus              # [YOURS] kubectl context the tools run against
 
-# --- Image registry: your mirror ---------------------------------------------
-# You mirror the whole image bundle + the OCI chart into one registry (see
-# mirror.sh). `base` is the flat path every image and the chart live under, and
-# becomes the chart's global.image.registry (the single "where images come from"
-# knob). `server`/`username`/`passwordEnv` build the pull Secret.
+# --- Image registry: your registry -------------------------------------------
+# The whole image bundle + the OCI chart live under one base path in your registry
+# (`image-manifest.sh --list` prints exactly what must be present). `base` is that
+# flat path and becomes the chart's global.image.registry (the single "where images
+# come from" knob). `server`/`username`/`passwordEnv` build the pull Secret.
 registry:
   base: acmeacr.azurecr.io/pinecone      # [YOURS]   -> global.image.registry (flat: <base>/<name>:<tag>)
   server: acmeacr.azurecr.io             # [YOURS]   docker-server for the pull Secret
@@ -42,11 +42,11 @@ registry:
 # --- Image bundle ------------------------------------------------------------
 # One bundle tag identifies the release. It is the OCI chart version suffix
 # (chart version = 0.0.0-bundle.<tag>) and the Nexus image tag. `dbTag`/`fdbTag`
-# feed the mirror and the local-chart path. `sourceRegistry` is Pinecone's
-# distribution registry that mirror.sh copies FROM. Every value in this block is
+# feed the image manifest and the local-chart path. `sourceRegistry` is Pinecone's
+# distribution registry the bundle originates from. Every value in this block is
 # one Pinecone hands you with the bundle — paste it, don't make it up.
 bundle:
-  tag: main-5470917                      # [PINECONE] nexus bundle tag == OCI chart version suffix
+  tag: main-0caffc9                      # [PINECONE] nexus bundle tag == OCI chart version suffix
   dbTag: main-5f7f2d6                    # [PINECONE] DB image tag (mirror + local-chart path); may differ from tag
   fdbTag: 7.3.77                         # [PINECONE] FoundationDB image tag
   sourceRegistry: us-docker.pkg.dev/pinecone-artifacts/nexus  # [PINECONE] source you mirror FROM (we grant access)

@@ -46,7 +46,7 @@ CONTAINER_SUFFIXES = [
 ]
 
 # Nexus images the chart deploys + the DB set + FoundationDB. Used by the
-# live image-presence check; mirror.sh derives the authoritative list from the render.
+# live image-presence check; image-manifest.sh derives the authoritative list from the render.
 NEXUS_IMAGES = [
     "nexus_api", "nexus_orchestrator", "nexus_runtime", "nexus_gateway",
     "nexus_console", "nexus_mcp", "nexus_auth", "nexus_inference_proxy",
@@ -417,18 +417,31 @@ def check_live(inp):
                 )
 
     section("LIVE: mirrored images")
+    # tags come from the render (manifest.txt); the chart can bake a tag other than bundle.tag
     acr = get(inp, "registry.server", "")
     acr_name = acr.split(".")[0] if acr else ""
-    repo_path = "/".join(get(inp, "registry.base", "").split("/")[1:])
-    if not (sub and acr_name):
-        warn("azure.subscription / registry.server incomplete — skipping image presence")
+    is_acr = acr.endswith(".azurecr.io")
+    manifest = os.path.join(_gen_dir, "manifest.txt")
+    if not os.path.exists(manifest):
+        warn(
+            "no generated/manifest.txt — run `./image-manifest.sh --list --chart-path <chart>` "
+            "first to record the exact refs the install pulls; skipping presence check"
+        )
+    elif not (sub and acr_name and is_acr):
+        # a pull-through registry caches on first pull; there is no tag list to check
+        warn(
+            f"registry.server '{acr or '(unset)'}' is not an ACR (or azure.subscription unset) — "
+            "cannot pre-verify presence for a pull-through/remote registry; images resolve "
+            "lazily on first pull. Confirm the remote's upstream repo covers EVERY source repo "
+            "listed by image-manifest.sh (this bundle spans more than one)."
+        )
     else:
-        tag = str(get(inp, "bundle.tag"))
-        db_tag = str(get(inp, "bundle.dbTag", tag))
-        for img in NEXUS_IMAGES:
-            _acr_tag_check(acr_name, sub, f"{repo_path}/{img}" if repo_path else img, tag)
-        for img in DB_IMAGES:
-            _acr_tag_check(acr_name, sub, f"{repo_path}/{img}" if repo_path else img, db_tag)
+        with open(manifest) as f:
+            refs = [ln.strip() for ln in f if ln.strip()]
+        for ref in refs:
+            body = ref.split("/", 1)[1]      # strip host -> <repo...>/<name>:<tag>
+            repo, tag = body.rsplit(":", 1)
+            _acr_tag_check(acr_name, sub, repo, tag)
 
     section("LIVE: workload identity federated credentials")
     auth = get(inp, "storage.auth", "shared_key")

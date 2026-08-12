@@ -10,7 +10,7 @@ every field) and emits, into the output dir (default install/generated/):
                           data-dir overlay + nexus.config.cloud=azure.
   values.self-hosted.yaml self-hosted config profile + the inference catalog + tiers +
                           empty providerKeys stubs (real keys are --set at install).
-  inputs.env              non-secret scalars install.sh / mirror.sh / create-secrets.sh
+  inputs.env              non-secret scalars install.sh / image-manifest.sh / create-secrets.sh
                           need, so bash needs no YAML parser. Contains NO secrets.
 
 Deterministic and secret-free: no key material is ever read or written here — the
@@ -207,18 +207,19 @@ def build_self_hosted_values(inp, dim):
     embed = req(inp, "inference.embeddingDeployment")
     rerank = req(inp, "inference.rerankDeployment")
 
-    # One chat model, three tiers pointed at it — the validated shape
-    # (a single gpt-5-backed chat deployment; additional chat models are roadmap).
+    # the proxy requires each tier to resolve to a distinct model ref
+    tier_labels = {"lite": "Chat (lite)", "standard": "Chat (standard)", "pro": "Chat (pro)"}
     llm_models = {
-        "chat": {
+        f"chat-{t}": {
             "api_style": "litellm",
             "model": f"azure/{chat}",
             "base_url": endpoint,
             "api_key_ref": LLM_KEY_REF,
-            "label": "Chat",
+            "label": lbl,
             "provider": "azure-openai",
             "max_retries": 2,
         }
+        for t, lbl in tier_labels.items()
     }
     embed_entry = {
         "api_style": "litellm",
@@ -262,9 +263,9 @@ def build_self_hosted_values(inp, dim):
                 "embeddingModels": embedding_models,
                 "rerankModels": rerank_models,
                 "tiers": {
-                    "lite": "chat",
-                    "standard": "chat",
-                    "pro": "chat",
+                    "lite": "chat-lite",
+                    "standard": "chat-standard",
+                    "pro": "chat-pro",
                     "embedding": embed,
                     "rerank": "rerank",
                 },
@@ -276,7 +277,7 @@ def build_self_hosted_values(inp, dim):
 
 
 def build_inputs_env(inp, dim, outdir):
-    """Non-secret scalars install.sh / mirror.sh / create-secrets.sh consume."""
+    """Non-secret scalars install.sh / image-manifest.sh / create-secrets.sh consume."""
     idx_id = req(inp, "staticIndex.id")
     auth = opt(inp, "storage.auth", "shared_key")
     baked_dim = int(req(inp, "bundle.bakedDimension"))
