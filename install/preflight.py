@@ -173,6 +173,58 @@ def check_dimension(inp):
         ok("staticIndex.id == baked index id -> OCI path can carry it")
 
 
+# Native output widths of common embedding models, keyed by a substring of the
+# deployment name. Used to catch the silent case where a model emits a width the
+# index does not expect. Matryoshka models (text-embedding-3-*) can be reduced via
+# request_dimensions; others cannot.
+KNOWN_NATIVE_DIMS = {
+    "text-embedding-3-small": (1536, True),
+    "text-embedding-3-large": (3072, True),
+    "text-embedding-ada-002": (1536, False),
+    "multilingual-e5-large": (1024, False),
+}
+
+
+def check_embedding_width(inp):
+    section("Embedding model output width")
+    dim = get(inp, "embedding.dimension")
+    embed = (get(inp, "inference.embeddingDeployment") or "").lower()
+    req = bool(get(inp, "embedding.requestDimensions", False))
+    if dim is None or not embed:
+        return
+    native = matryoshka = None
+    for name, (width, matr) in KNOWN_NATIVE_DIMS.items():
+        if name in embed:
+            native, matryoshka = width, matr
+            break
+    if native is None:
+        warn(f"unknown embedding model '{embed}' — can't verify its native width equals {dim}")
+        return
+    if native == int(dim):
+        ok(f"'{embed}' native width {native} == target dimension {dim}")
+        if req:
+            warn("embedding.requestDimensions is set but the target equals the native width — no-op")
+        return
+    # target != native.
+    if not req:
+        fail(
+            f"'{embed}' emits {native}-wide vectors natively but embedding.dimension={dim}. "
+            f"Set embedding.requestDimensions: true (Matryoshka reduction, needs a bundle whose "
+            f"proxy honors it — nexus#1701) or set the dimension to {native}. Otherwise the "
+            "vectors won't match the index and ingest fails."
+        )
+    elif not matryoshka:
+        fail(
+            f"'{embed}' is not a Matryoshka model, so requestDimensions can't reduce {native}->{dim}. "
+            f"Use dimension {native} or a reducible model (text-embedding-3-*)."
+        )
+    else:
+        ok(
+            f"'{embed}' native {native} -> requestDimensions asks for {dim} (Matryoshka; "
+            "needs a bundle with the dimensions passthrough, nexus#1701)"
+        )
+
+
 def check_containers(inp):
     section("Container prefix")
     prefix = get(inp, "storage.containerPrefix")
@@ -429,6 +481,7 @@ def main():
 
     print(f"Preflight: {args.inputs}" + ("  (static + live)" if args.live else "  (static)"))
     check_dimension(inp)
+    check_embedding_width(inp)
     check_containers(inp)
     check_inference(inp)
     check_registry(inp)

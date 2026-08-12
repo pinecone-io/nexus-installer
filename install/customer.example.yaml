@@ -91,11 +91,19 @@ inference:
 
 # --- Embedding dimension (THE consistency lynchpin) --------------------------
 # One value feeds staticIndex.dimension, nexus.config.indexMetadata.dimension, and
-# nexus.config.embeddingModel.dimension. It MUST equal the embedding model's output
-# width. text-embedding-3-small = 1536; the kind-gate default = 1024. A value that
-# differs from bundle.bakedDimension forces the local-chart path.
+# nexus.config.embeddingModel.dimension, and it must equal the width the embedding
+# model actually emits. A value that differs from bundle.bakedDimension forces the
+# local-chart path.
+#
+# text-embedding-3-small emits 1536 natively, but it is a Matryoshka model: set
+# requestDimensions: true and the proxy asks it for `dimension`-wide (1024) vectors
+# instead. That keeps the target at the chart's baked 1024 so the OCI path works for
+# the recommended model with no re-mint. (Needs a bundle whose inference proxy honors
+# the dimensions request — nexus#1701; older bundles only support a natively-1024
+# model such as multilingual-e5-large.)
 embedding:
   dimension: 1024
+  requestDimensions: true        # ask a Matryoshka model to emit `dimension`-wide vectors
 
 # --- Ingress (exposure — you wire the controller / DNS / TLS) ----------------
 ingress:

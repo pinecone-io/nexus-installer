@@ -220,18 +220,22 @@ def build_self_hosted_values(inp, dim):
             "max_retries": 2,
         }
     }
-    embedding_models = {
-        embed: {
-            "api_style": "litellm",
-            "model": f"azure/{embed}",
-            "base_url": endpoint,
-            "api_key_ref": EMBED_KEY_REF,
-            "dimension": dim,
-            "max_retries": 2,
-            "max_input_chars": 8000,
-            "max_batch_size": 96,
-        }
+    embed_entry = {
+        "api_style": "litellm",
+        "model": f"azure/{embed}",
+        "base_url": endpoint,
+        "api_key_ref": EMBED_KEY_REF,
+        "dimension": dim,
+        "max_retries": 2,
+        "max_input_chars": 8000,
+        "max_batch_size": 96,
     }
+    # Matryoshka: ask the provider for `dim`-wide vectors instead of the model's native
+    # width (needs a bundle whose proxy honors it — nexus#1701). Omitted when false so
+    # the values validate against an older bundle's schema.
+    if opt(inp, "embedding.requestDimensions", False):
+        embed_entry["request_dimensions"] = True
+    embedding_models = {embed: embed_entry}
     rerank_models = {
         "rerank": {
             "api_style": "litellm",

@@ -90,7 +90,11 @@ configures. The important ones:
 
 - `embedding.dimension` — the single source for `staticIndex.dimension`,
   `nexus.config.indexMetadata.dimension`, and `nexus.config.embeddingModel.dimension`.
-  It must equal your embedding model's output width.
+  It must equal the width your embedding model actually emits. `text-embedding-3-small`
+  emits 1536 natively but is a Matryoshka model: with `embedding.requestDimensions: true`
+  the proxy asks it for `dimension`-wide (1024) vectors, so the recommended model stays
+  at the chart's baked 1024 and installs over OCI with no re-mint (needs a bundle whose
+  proxy honors the dimensions request — nexus#1701).
 - `storage.containerPrefix` — the stem the seven container names derive from.
 - `storage.auth` — `shared_key` (an account-key Secret) or `workload_identity` (keyless;
   needs `clientId`, the user-assigned managed identity).
@@ -130,8 +134,10 @@ embedding dimension and the static index id** into its generated DB values at bu
 time, and the OCI path cannot override them. So:
 
 - **Dimension and index id equal the bundle's baked values** → OCI path, fully automated.
-- **A non-default dimension** (e.g. 1536 for `text-embedding-3-small`) **or a freshly
-  minted index id** → the **local-chart path**. `install.sh` selects it automatically;
+  The recommended `text-embedding-3-small` at 1024 (via `embedding.requestDimensions`,
+  above) lands here — matching the baked dimension keeps it on the OCI path.
+- **A non-default dimension** (a width no reduction gets you to the baked value) **or a
+  freshly minted index id** → the **local-chart path**. `install.sh` selects it automatically;
   preflight tells you, and the flow is:
 
   ```bash
