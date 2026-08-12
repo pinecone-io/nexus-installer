@@ -139,7 +139,7 @@ def check_dimension(inp):
             "The OCI install path cannot override the data-plane dimension "
             "(PINECONE_HEADLESS__DIMENSION + the schema JSON are baked into the "
             "published db-slim values). Use the local-chart path (install.sh "
-            "--path local --chart-path <nexus/deploy/installer/chart>, after "
+            "--path local --chart-path <chart checkout>, after "
             "remint-dbslim.sh sets the dimension), or a bundle chart built for this "
             "dimension. See README 'OCI vs local-chart path'."
         )

@@ -143,7 +143,7 @@ time, and the OCI path cannot override them. So:
   preflight tells you, and the flow is:
 
   ```bash
-  # against a nexus/deploy/installer/chart checkout Pinecone provides:
+  # against the chart checkout Pinecone provides:
   ./remint-dbslim.sh --chart-path /path/to/chart          # sets dim + id, regenerates DB values
   ./install.sh --path local --chart-path /path/to/chart
   ```

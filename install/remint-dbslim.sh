@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-[ -n "$CHART_PATH" ] || die "--chart-path is required (a nexus/deploy/installer/chart checkout)"
+[ -n "$CHART_PATH" ] || die "--chart-path is required (the chart checkout Pinecone provides)"
 COMMON="$CHART_PATH/scripts/inputs/common.yaml"
 GEN="$CHART_PATH/scripts/gen-dbslim-values.py"
 [ -f "$COMMON" ] || die "not a chart checkout: missing $COMMON"

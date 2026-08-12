@@ -57,7 +57,7 @@ if [ "$RESOLVED_PATH" = "oci" ]; then
   VERSION_ARGS=(--version "$CHART_VERSION")
   log "install path: OCI  ($CHART_REF --version $CHART_VERSION)"
 else
-  [ -n "$CHART_PATH" ] || die "local-chart path selected (dimension/index id differ from the baked bundle) but --chart-path was not given. Point it at a nexus/deploy/installer/chart checkout, run remint-dbslim.sh for your dimension first, then re-run."
+  [ -n "$CHART_PATH" ] || die "local-chart path selected (dimension/index id differ from the baked bundle) but --chart-path was not given. Point it at the chart checkout Pinecone provides, run remint-dbslim.sh for your dimension first, then re-run."
   [ -d "$CHART_PATH" ] || die "--chart-path not a directory: $CHART_PATH"
   CHART_REF="$CHART_PATH"
   VERSION_ARGS=()
