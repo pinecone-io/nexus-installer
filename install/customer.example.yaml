@@ -46,7 +46,7 @@ registry:
 # distribution registry the bundle originates from. Every value in this block is
 # one Pinecone hands you with the bundle — paste it, don't make it up.
 bundle:
-  tag: main-0caffc9                      # [PINECONE] nexus bundle tag == OCI chart version suffix
+  tag: main-8eeb305                      # [PINECONE] nexus bundle tag == OCI chart version suffix
   dbTag: main-5f7f2d6                    # [PINECONE] DB image tag (mirror + local-chart path); may differ from tag
   fdbTag: 7.3.77                         # [PINECONE] FoundationDB image tag
   sourceRegistry: us-docker.pkg.dev/pinecone-artifacts/nexus  # [PINECONE] source you mirror FROM (we grant access)
