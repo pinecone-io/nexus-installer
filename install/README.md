@@ -94,7 +94,7 @@ configures. The important ones:
   emits 1536 natively but is a Matryoshka model: with `embedding.requestDimensions: true`
   the proxy asks it for `dimension`-wide (1024) vectors, so the recommended model stays
   at the chart's baked 1024 and installs over OCI with no re-mint (needs a bundle whose
-  proxy honors the dimensions request — nexus#1701).
+  proxy honors the dimensions request).
 - `storage.containerPrefix` — the stem the seven container names derive from.
 - `storage.auth` — `shared_key` (an account-key Secret) or `workload_identity` (keyless;
   needs `clientId`, the user-assigned managed identity).

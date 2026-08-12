@@ -226,13 +226,13 @@ def check_embedding_width(inp):
     if matryoshka and req:
         ok(
             f"'{model}' native {native} -> request_dimensions asks for {dim} (Matryoshka; "
-            "needs a bundle whose proxy honors the dimensions request, nexus#1701)"
+            "needs a bundle whose proxy honors the dimensions request)"
         )
     elif matryoshka and not req:
         fail(
             f"'{model}' emits {native}-wide vectors natively but the declared dimension is {dim}. "
             "Set embedding.requestDimensions: true so the model truncates to the declared width "
-            "(Matryoshka; needs a bundle whose proxy honors it — nexus#1701). Otherwise the vectors "
+            "(Matryoshka; needs a bundle whose proxy honors it). Otherwise the vectors "
             "won't match the index and ingest fails."
         )
     else:

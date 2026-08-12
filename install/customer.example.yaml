@@ -12,14 +12,20 @@
 #   cp customer.example.yaml customer.yaml     # customer.yaml is gitignored
 #   $EDITOR customer.yaml
 #
+# Each field carries a tag so you know what to do with it:
+#   [YOURS]    supply from your environment — the values only you have.
+#   [PINECONE] paste the value Pinecone hands you with the bundle; don't invent it.
+#   [DEFAULT]  a working default — leave as-is unless you have a specific reason.
+#   [OPTIONAL] can be skipped entirely (left off/empty by default).
+#
 # Example values use the placeholder org `acme` and the stem `acme`.
 # Each field's trailing comment names exactly what it configures.
 # =============================================================================
 
 # --- Cluster access ----------------------------------------------------------
-# The kubectl context the tools operate against (runbook AKS_CONTEXT). For AKS
-# this is usually the cluster name after `az aks get-credentials`.
-kubeContext: aks-acme-nexus
+# The kubectl context the tools operate against. For AKS this is usually the
+# cluster name after `az aks get-credentials`.
+kubeContext: aks-acme-nexus              # [YOURS] kubectl context the tools run against
 
 # --- Image registry: your mirror ---------------------------------------------
 # You mirror the whole image bundle + the OCI chart into one registry (see
@@ -27,67 +33,68 @@ kubeContext: aks-acme-nexus
 # becomes the chart's global.image.registry (the single "where images come from"
 # knob). `server`/`username`/`passwordEnv` build the pull Secret.
 registry:
-  base: acmeacr.azurecr.io/pinecone      # -> global.image.registry (flat: <base>/<name>:<tag>)
-  server: acmeacr.azurecr.io             # docker-server for the pull Secret
-  username: acmeacr                      # docker-username (for ACR, the registry name)
-  passwordEnv: NEXUS_REGISTRY_PASSWORD   # env var holding the registry password (never the literal)
-  pullSecretName: acr-pull               # name of the pull Secret to create + consume
+  base: acmeacr.azurecr.io/pinecone      # [YOURS]   -> global.image.registry (flat: <base>/<name>:<tag>)
+  server: acmeacr.azurecr.io             # [YOURS]   docker-server for the pull Secret
+  username: acmeacr                      # [YOURS]   docker-username (for ACR, the registry name)
+  passwordEnv: NEXUS_REGISTRY_PASSWORD   # [YOURS]   env var name holding the registry password (never the literal)
+  pullSecretName: acr-pull               # [DEFAULT] name of the pull Secret to create + consume
 
 # --- Image bundle ------------------------------------------------------------
 # One bundle tag identifies the release. It is the OCI chart version suffix
 # (chart version = 0.0.0-bundle.<tag>) and the Nexus image tag. `dbTag`/`fdbTag`
 # feed the mirror and the local-chart path. `sourceRegistry` is Pinecone's
-# distribution registry that mirror.sh copies FROM.
+# distribution registry that mirror.sh copies FROM. Every value in this block is
+# one Pinecone hands you with the bundle — paste it, don't make it up.
 bundle:
-  tag: main-5470917                      # nexus bundle tag == OCI chart version suffix (Pinecone gives you the real one)
-  dbTag: main-5f7f2d6                    # DB image tag (mirror + local-chart path); may differ from tag
-  fdbTag: 7.3.77                         # FoundationDB image tag
-  sourceRegistry: us-docker.pkg.dev/pinecone-artifacts/nexus  # Pinecone source (mirror FROM)
+  tag: main-5470917                      # [PINECONE] nexus bundle tag == OCI chart version suffix
+  dbTag: main-5f7f2d6                    # [PINECONE] DB image tag (mirror + local-chart path); may differ from tag
+  fdbTag: 7.3.77                         # [PINECONE] FoundationDB image tag
+  sourceRegistry: us-docker.pkg.dev/pinecone-artifacts/nexus  # [PINECONE] source you mirror FROM (we grant access)
   # The data plane BAKES these into the published OCI chart at build time and the
   # OCI install path cannot override them (see README "OCI vs local-chart path").
   # Pinecone ships these two values with the bundle. If your embedding dimension
   # or a freshly minted index id differ from these, preflight forces the
   # local-chart path automatically.
-  bakedDimension: 1024
-  bakedIndexId: 8fe737ee-67aa-47c4-b7b2-ed5ac39c552e
+  bakedDimension: 1024                              # [PINECONE] shipped with the bundle; don't change
+  bakedIndexId: 8fe737ee-67aa-47c4-b7b2-ed5ac39c552e  # [PINECONE] shipped with the bundle; don't change
 
 # --- Static index ------------------------------------------------------------
 # The one index the whole stack shares. Re-minting the id after data is ingested
 # orphans it, so choose once. MINT A FRESH uuid per install (`uuidgen`) UNLESS you
 # are on the OCI path, which must keep the baked id above (preflight enforces this).
 staticIndex:
-  id: 8fe737ee-67aa-47c4-b7b2-ed5ac39c552e   # -> staticIndex.id + nexus.config.indexMetadata.indexId
-  name: nexus-hybrid                          # -> staticIndex.name
+  id: 8fe737ee-67aa-47c4-b7b2-ed5ac39c552e   # [PINECONE] keep = bundle.bakedIndexId on OCI; mint fresh only on the local-chart path
+  name: nexus-hybrid                          # [DEFAULT]  -> staticIndex.name
   # dimension is taken from embedding.dimension below (one source of truth).
 
 # --- Blob storage (Azure) ----------------------------------------------------
-# You pre-create the account and the seven containers (see README / runbook 0c).
+# You pre-create the account and the seven containers (see README).
 # `containerPrefix` is the stem the seven names derive from.
 storage:
-  account: acmenexusstore                # -> blob.abs.account
-  containerPrefix: acme                  # -> blob.abs.containerPrefix; 7 containers:
-                                         #    <stem>-db + <stem>-nexus-{source,knowledge,archive,traces,snapshots,library}
-  auth: shared_key                       # shared_key | workload_identity
+  account: acmenexusstore                # [YOURS]   -> blob.abs.account
+  containerPrefix: acme                  # [YOURS]   -> blob.abs.containerPrefix; 7 containers:
+                                         #            <stem>-db + <stem>-nexus-{source,knowledge,archive,traces,snapshots,library}
+  auth: shared_key                       # [YOURS]   choose one: shared_key | workload_identity
   # --- shared_key only ---
-  existingSecret: nexus-azure-storage    # k8s Secret holding the account key (create-secrets.sh creates it)
-  storageKeyEnv: NEXUS_STORAGE_KEY       # env var holding the storage account key
+  existingSecret: nexus-azure-storage    # [DEFAULT] k8s Secret name holding the account key (create-secrets.sh creates it)
+  storageKeyEnv: NEXUS_STORAGE_KEY       # [DEFAULT] env var name holding the storage account key
   # --- workload_identity only ---
-  clientId: ""                           # user-assigned managed identity client id -> blob.abs.clientId
+  clientId: ""                           # [YOURS]   user-assigned managed identity client id -> blob.abs.clientId
 
 # --- Model endpoints (OpenAI-compatible: Azure OpenAI + Azure AI Foundry) -----
-# The chat/embedding/rerank deployment NAMES must be names the embedded routing
-# library recognizes (runbook 0d): chat `gpt-5`, embedding `text-embedding-3-small`,
-# rerank named literally `rerank-v3.5`. Keys are given as env-var references and
-# injected at install time via --set (never written to a values file).
+# You create the chat/embedding/rerank deployments, but their NAMES must be ones
+# the embedded routing library recognizes: chat `gpt-5`, embedding
+# `text-embedding-3-small`, rerank named literally `rerank-v3.5`. Keys are given as
+# env-var references and injected at install time via --set (never written to a values file).
 inference:
-  endpoint: https://acme-aoai.cognitiveservices.azure.com        # chat + embedding base_url
-  rerankEndpoint: https://acme-aoai.services.ai.azure.com/providers/cohere  # Foundry Cohere rerank base_url
-  chatDeployment: gpt-5                  # Azure chat deployment name
-  embeddingDeployment: text-embedding-3-small  # Azure embedding deployment name
-  rerankDeployment: rerank-v3.5          # Azure/Foundry rerank deployment name
-  llmKeyEnv: NEXUS_LLM_KEY               # env var holding the chat key
-  embeddingKeyEnv: NEXUS_LLM_KEY         # env var holding the embedding key (often the same AOAI key)
-  rerankKeyEnv: NEXUS_RERANK_KEY         # env var holding the rerank key
+  endpoint: https://acme-aoai.cognitiveservices.azure.com        # [YOURS]   chat + embedding base_url
+  rerankEndpoint: https://acme-aoai.services.ai.azure.com/providers/cohere  # [YOURS] Foundry Cohere rerank base_url
+  chatDeployment: gpt-5                  # [YOURS]   your deployment; name must be router-recognized (e.g. gpt-5)
+  embeddingDeployment: text-embedding-3-small  # [YOURS] your deployment; recommended text-embedding-3-small
+  rerankDeployment: rerank-v3.5          # [YOURS]   your deployment; MUST be named literally rerank-v3.5
+  llmKeyEnv: NEXUS_LLM_KEY               # [DEFAULT] env var name holding the chat key
+  embeddingKeyEnv: NEXUS_LLM_KEY         # [DEFAULT] env var name holding the embedding key (often the same AOAI key)
+  rerankKeyEnv: NEXUS_RERANK_KEY         # [DEFAULT] env var name holding the rerank key
 
 # --- Embedding dimension (THE consistency lynchpin) --------------------------
 # One value feeds staticIndex.dimension, nexus.config.indexMetadata.dimension, and
@@ -99,29 +106,31 @@ inference:
 # requestDimensions: true and the proxy asks it for `dimension`-wide (1024) vectors
 # instead. That keeps the target at the chart's baked 1024 so the OCI path works for
 # the recommended model with no re-mint. (Needs a bundle whose inference proxy honors
-# the dimensions request — nexus#1701; older bundles only support a natively-1024
+# the dimensions request; older bundles only support a natively-1024
 # model such as multilingual-e5-large.)
 embedding:
-  dimension: 1024
-  # Ask a Matryoshka model to emit `dimension`-wide vectors. Leave unset and the
+  dimension: 1024                # [DEFAULT] recommended 1024 (must equal what the model emits; see above)
+  # [DEFAULT] Ask a Matryoshka model to emit `dimension`-wide vectors. Leave unset and the
   # generator defaults it on for a text-embedding-3-* model; set it explicitly to
   # force on/off (e.g. false for a model whose native width already equals dimension).
   requestDimensions: true
 
 # --- Ingress (exposure — you wire the controller / DNS / TLS) ----------------
+# [OPTIONAL] Off by default: the gateway stays ClusterIP and you expose it later.
 ingress:
-  enabled: false
-  className: ""                          # IngressClass; empty = cluster default
-  host: ""                               # e.g. nexus.internal.acme.example
-  tlsSecretName: ""                      # a TLS Secret YOU create; empty = no TLS block
+  enabled: false                         # [OPTIONAL] false = gateway stays ClusterIP
+  className: ""                          # [OPTIONAL] IngressClass; empty = cluster default
+  host: ""                               # [OPTIONAL] e.g. nexus.internal.acme.example
+  tlsSecretName: ""                      # [OPTIONAL] a TLS Secret YOU create; empty = no TLS block
 
-# --- Host branding (optional) ------------------------------------------------
+# --- Host branding -----------------------------------------------------------
 host:
-  name: Nexus                            # -> nexus.config.host.name
-  url: ""                                # -> nexus.config.host.url; empty derives https://<ingress.host>
+  name: Nexus                            # [DEFAULT]  -> nexus.config.host.name
+  url: ""                                # [OPTIONAL] -> nexus.config.host.url; empty derives https://<ingress.host>
 
-# --- Azure identifiers (optional; only used by `preflight.py --live`) --------
+# --- Azure identifiers -------------------------------------------------------
+# [OPTIONAL] Only used by `preflight.py --live` for the cloud-side checks.
 azure:
-  subscription: ""                       # subscription id or name
-  resourceGroup: ""                      # RG holding the cluster + storage account
-  aoaiResourceGroup: ""                  # RG holding the Azure OpenAI account
+  subscription: ""                       # [OPTIONAL] subscription id or name
+  resourceGroup: ""                      # [OPTIONAL] RG holding the cluster + storage account
+  aoaiResourceGroup: ""                  # [OPTIONAL] RG holding the Azure OpenAI account
