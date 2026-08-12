@@ -1,0 +1,6 @@
+# The filled-in inputs (may contain env-var names but is per-customer) and everything
+# generated from it. Never commit; never contains secret values, but is per-install.
+customer.yaml
+generated/
+.secrets.env
+__pycache__/
