@@ -74,8 +74,9 @@ After apply, feed the outputs into the umbrella chart's Azure Blob (`blob.abs`) 
 
 The seven containers themselves (`blob_container_names`, informational) are created by this
 module, so the chart's data path is ready as soon as `terraform apply` completes — there is no
-separate container-creation step. (nexus #1665 will rename the chart value `blob.abs.container`
-→ `containerPrefix`; the `blob_container` output name should follow once it lands.)
+separate container-creation step. (A forthcoming chart release will rename the chart value
+`blob.abs.container` → `containerPrefix`; the `blob_container` output name should follow once
+it lands.)
 
 The `workload_federated_credentials` variable must match the Helm **release namespace** and the
 **service account** the chart creates (single-namespace install; SA = `pinecone.serviceAccount.name`).

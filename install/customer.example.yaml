@@ -99,7 +99,7 @@ inference:
 # requestDimensions: true and the proxy asks it for `dimension`-wide (1024) vectors
 # instead. That keeps the target at the chart's baked 1024 so the OCI path works for
 # the recommended model with no re-mint. (Needs a bundle whose inference proxy honors
-# the dimensions request — nexus#1701; older bundles only support a natively-1024
+# the dimensions request; older bundles only support a natively-1024
 # model such as multilingual-e5-large.)
 embedding:
   dimension: 1024

@@ -231,7 +231,7 @@ def build_self_hosted_values(inp, dim):
         "max_batch_size": 96,
     }
     # Matryoshka: ask the provider for `dim`-wide vectors instead of the model's native
-    # width (needs a bundle whose proxy honors it — nexus#1701). Defaults on for a
+    # width (needs a bundle whose proxy honors it). Defaults on for a
     # text-embedding-3-* model so the recommended install truncates to the baked width;
     # an explicit embedding.requestDimensions wins. Omitted when false so the values
     # validate against an older bundle's schema.
