@@ -417,8 +417,8 @@ def check_live(inp):
                 )
 
     section("LIVE: mirrored images")
-    # Verify the exact refs the install pulls, from the manifest image-manifest.sh writes
-    # (generated/manifest.txt) — the chart render is the source of truth for tags.
+    # Tags come from the render (generated/manifest.txt), not bundle.tag — the chart
+    # can bake a different image tag than the bundle version.
     acr = get(inp, "registry.server", "")
     acr_name = acr.split(".")[0] if acr else ""
     is_acr = acr.endswith(".azurecr.io")

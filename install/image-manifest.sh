@@ -37,10 +37,9 @@ source_refs() {
     rendered=$(helm template nexus "$CHART_PATH" \
       --set nexus.auth.jwtSecret=x --set nexus.config.byocSessionCredential=x 2>/dev/null)
     {
-      # pod-spec images (nexus services, db-slim, foundationdb)
       printf '%s\n' "$rendered" | grep -oE 'image: "?[^"]+' | sed -E 's/^image: "?//'
-      # the task runtime image is pulled by the orchestrator at task time, so it
-      # is referenced in config rather than as a pod image: — capture it too.
+      # the task runtime is pulled by the orchestrator at task time, so it lands in
+      # config rather than a pod image: field — grep it out separately.
       printf '%s\n' "$rendered" | grep -oE '[A-Za-z0-9._/-]+/nexus_runtime:[A-Za-z0-9._-]+'
     } | while IFS= read -r ref; do [ -n "$ref" ] && printf '%s\t%s\n' "$ref" "${ref##*/}"; done | sort -u
     return
