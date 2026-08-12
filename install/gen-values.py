@@ -207,18 +207,20 @@ def build_self_hosted_values(inp, dim):
     embed = req(inp, "inference.embeddingDeployment")
     rerank = req(inp, "inference.rerankDeployment")
 
-    # One chat model, three tiers pointed at it — the validated shape
-    # (a single gpt-5-backed chat deployment; additional chat models are roadmap).
+    # One chat deployment surfaced as three distinct tier models — the proxy
+    # requires lite/standard/pro to each resolve to a distinct model ref.
+    tier_labels = {"lite": "Chat (lite)", "standard": "Chat (standard)", "pro": "Chat (pro)"}
     llm_models = {
-        "chat": {
+        f"chat-{t}": {
             "api_style": "litellm",
             "model": f"azure/{chat}",
             "base_url": endpoint,
             "api_key_ref": LLM_KEY_REF,
-            "label": "Chat",
+            "label": lbl,
             "provider": "azure-openai",
             "max_retries": 2,
         }
+        for t, lbl in tier_labels.items()
     }
     embed_entry = {
         "api_style": "litellm",
@@ -262,9 +264,9 @@ def build_self_hosted_values(inp, dim):
                 "embeddingModels": embedding_models,
                 "rerankModels": rerank_models,
                 "tiers": {
-                    "lite": "chat",
-                    "standard": "chat",
-                    "pro": "chat",
+                    "lite": "chat-lite",
+                    "standard": "chat-standard",
+                    "pro": "chat-pro",
                     "embedding": embed,
                     "rerank": "rerank",
                 },
