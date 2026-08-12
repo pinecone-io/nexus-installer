@@ -100,7 +100,6 @@ helm registry login <registry.server>                        # the ACR/Artifacto
 steps 1–3 are optional before step 4 — they're there so you can inspect the artifacts
 and confirm your registry first.
 
-> [!TIP]
 > **Variant — install straight from Pinecone's registry (granted access).** If Pinecone
 > granted your cluster pull access to the bundle repo, you can skip the mirror entirely:
 > point `registry.base` **and** `registry.server` at that one repo and install directly —
