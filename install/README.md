@@ -100,6 +100,26 @@ helm registry login <registry.server>                        # the ACR/Artifacto
 steps 1–3 are optional before step 4 — they're there so you can inspect the artifacts
 and confirm your registry first.
 
+### Variant: install straight from Pinecone's registry (granted access)
+
+If Pinecone granted your cluster pull access to the bundle repo, you can skip the
+mirror entirely: point `registry.base` **and** `registry.server` at that one repo and
+install directly — the single-repo bundle resolves without any staging.
+
+```yaml
+registry:
+  base: us-docker.pkg.dev/pinecone-artifacts/nexus   # = bundle.sourceRegistry
+  server: us-docker.pkg.dev
+  username: _json_key                                # service-account key auth
+  passwordEnv: NEXUS_REGISTRY_PASSWORD               # holds the SA key JSON
+```
+
+Use a **service-account key**, not a short-lived `gcloud` token: nodes re-pull on
+reschedule, so the pull Secret must outlive an hour. `helm registry login
+us-docker.pkg.dev` before install, as above. `preflight.py --live` can't pre-verify
+image presence on a non-ACR registry (it WARNs and images resolve on first pull); the
+rest of preflight is unchanged.
+
 ## Verify the install
 
 When `install.sh` returns, confirm the stack is healthy and then exercise it end to end.
