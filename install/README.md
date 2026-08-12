@@ -135,9 +135,11 @@ time, and the OCI path cannot override them. So:
 
 - **Dimension and index id equal the bundle's baked values** → OCI path, fully automated.
   The recommended `text-embedding-3-small` at 1024 (via `embedding.requestDimensions`,
-  above) lands here — matching the baked dimension keeps it on the OCI path.
-- **A non-default dimension** (a width no reduction gets you to the baked value) **or a
-  freshly minted index id** → the **local-chart path**. `install.sh` selects it automatically;
+  above) lands here — a Matryoshka model truncating to the baked dimension keeps it on
+  the OCI path, so this is now the default rather than a fallback.
+- **A non-Matryoshka model whose native width isn't the baked dimension** (reduction can't
+  reach it), or **a freshly minted index id** → the **local-chart path**. `install.sh`
+  selects it automatically;
   preflight tells you, and the flow is:
 
   ```bash

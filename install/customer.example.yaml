@@ -39,8 +39,8 @@ registry:
 # feed the mirror and the local-chart path. `sourceRegistry` is Pinecone's
 # distribution registry that mirror.sh copies FROM.
 bundle:
-  tag: main-b7ff659                      # nexus bundle tag == OCI chart version suffix
-  dbTag: main-b7ff659                    # DB image tag (mirror + local-chart path)
+  tag: main-5470917                      # nexus bundle tag == OCI chart version suffix (Pinecone gives you the real one)
+  dbTag: main-5f7f2d6                    # DB image tag (mirror + local-chart path); may differ from tag
   fdbTag: 7.3.77                         # FoundationDB image tag
   sourceRegistry: us-docker.pkg.dev/pinecone-artifacts/nexus  # Pinecone source (mirror FROM)
   # The data plane BAKES these into the published OCI chart at build time and the
@@ -103,7 +103,10 @@ inference:
 # model such as multilingual-e5-large.)
 embedding:
   dimension: 1024
-  requestDimensions: true        # ask a Matryoshka model to emit `dimension`-wide vectors
+  # Ask a Matryoshka model to emit `dimension`-wide vectors. Leave unset and the
+  # generator defaults it on for a text-embedding-3-* model; set it explicitly to
+  # force on/off (e.g. false for a model whose native width already equals dimension).
+  requestDimensions: true
 
 # --- Ingress (exposure — you wire the controller / DNS / TLS) ----------------
 ingress:
