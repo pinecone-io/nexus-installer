@@ -29,12 +29,14 @@ NEXUS_IMAGES=(nexus_api nexus_orchestrator nexus_runtime nexus_gateway nexus_con
               nexus_mcp nexus_auth nexus_inference_proxy nexus_file_proxy)
 DB_IMAGES=(docs-api index-builder query-routers query-executors-slab request-log-writers)
 
-# "SOURCE_REF<TAB><name>:<tag>" per image. With a render, the chart's own refs
-# (true source repos, exact tags); else a static fallback (single-registry, approximate).
+# "SOURCE_REF<TAB><name>:<tag>" per image, resolved against sourceRegistry — the one
+# repo the whole bundle is promoted into. A render gives exact tags; else a static
+# fallback, approximate.
 source_refs() {
   if [ -n "$CHART_PATH" ] && command -v helm >/dev/null 2>&1; then
     local rendered
     rendered=$(helm template nexus "$CHART_PATH" \
+      --set global.image.registry="$SOURCE_REGISTRY" \
       --set nexus.auth.jwtSecret=x --set nexus.config.byocSessionCredential=x 2>/dev/null)
     {
       printf '%s\n' "$rendered" | grep -oE 'image: "?[^"]+' | sed -E 's/^image: "?//'
@@ -67,8 +69,8 @@ printf '  %-64s  <- %s\n' "$chart_dest" "$SOURCE_REGISTRY/nexus-installer:$CHART
 echo "$chart_dest" >> "$MANIFEST"
 
 echo
-echo "# Upstream SOURCE repos these publish from (informational — your registry.base"
-echo "# above is one flat path; a pull-through remote fronts only ONE of these):"
+echo "# Upstream SOURCE repo these publish from (informational — the whole bundle is"
+echo "# promoted into this one repo, so a pull-through remote fronting it resolves all):"
 source_refs | cut -f1 | sed -E 's#/[^/]+:[^/]+$##' | sort -u | sed 's/^/  /'
 echo
 echo "# wrote $MANIFEST  (preflight.py --live verifies it)"
