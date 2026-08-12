@@ -47,7 +47,8 @@ MANIFEST="$GEN_DIR/manifest.txt"
 : > "$MANIFEST"
 
 echo "# Artifacts the install pulls (dest base = registry.base = $REGISTRY_BASE):"
-[ -n "$CHART_PATH" ] || warn "no --chart-path: sources approximate and the nexus image tag may be wrong; pass --chart-path for exact refs."
+[ -n "$CHART_PATH" ] || warn "no --chart-path: sources approximate and the nexus image tag may be wrong. For exact refs, pull the chart first, then re-run with --chart-path:
+    helm registry login ${SOURCE_REGISTRY%%/*} && helm pull oci://$SOURCE_REGISTRY/nexus-installer --version $CHART_VERSION --untar && $0 --list --chart-path ./nexus-installer"
 
 while IFS=$'\t' read -r src nt; do
   name="${nt%:*}"; tag="${nt##*:}"

@@ -41,8 +41,12 @@ Before running anything:
   optional `terraform/aks-slim` module in this repo stands up a conforming AKS cluster.
 - **A registry.** The image bundle + the OCI chart available under one base path in
   your ACR/Artifactory, plus a pull credential — staged by your own pipeline (an
-  active copy) or served by a pull-through remote. `image-manifest.sh --list` prints
-  exactly what must be present.
+  active copy) or served by a pull-through remote fronting the single repo the bundle
+  publishes from (one remote resolves the whole bundle). `image-manifest.sh --list`
+  prints exactly what must be present. Two logins are involved and are separate: the
+  in-cluster **pull Secret** (`create-secrets.sh`, from `registry.passwordEnv`) lets the
+  nodes pull the *images*, while **`helm` itself** must be logged in to this registry
+  (`helm registry login <registry.server>`) so it can pull the *OCI chart* at install.
 - **Azure Blob storage.** One StorageV2 account and its **seven containers** (the stack
   does not create them). The optional `terraform/aks-slim` module provisions them for
   you; otherwise create them before install. Names derive from your stem: `<stem>-db`
@@ -72,17 +76,24 @@ export NEXUS_RERANK_KEY=...                # inference.rerankKeyEnv
 python3 gen-values.py
 python3 preflight.py                       # static invariants; fix any FAIL before continuing
 
-# 2. List the images + chart the install pulls, and make sure they are present in your
-#    registry — staged by your own pipeline (an active copy) or served by a pull-through
-#    remote. This copies nothing.
-./image-manifest.sh --list                 # add --chart-path <chart> for exact refs
+# 2. List the exact images + chart the install pulls, and make sure they are present in
+#    your registry — staged by your own pipeline (an active copy) or served by a
+#    pull-through remote. This copies nothing. The chart bakes the exact image tags (the
+#    nexus tag can differ from bundle.tag), so pull the chart from the source Pinecone
+#    granted you and render against it — otherwise the tags are only approximate:
+helm registry login <bundle.sourceRegistry host>              # e.g. us-docker.pkg.dev
+helm pull oci://<bundle.sourceRegistry>/nexus-installer \
+     --version 0.0.0-bundle.<bundle.tag> --untar              # -> ./nexus-installer
+./image-manifest.sh --list --chart-path ./nexus-installer
 
 # 3. Optional live checks (containers, image presence, identity in the cloud):
 python3 preflight.py --live
 
-# 4. Dry-run the whole install (touches nothing), then install for real:
+# 4. Log in to YOUR registry so helm can pull the OCI chart at install, then dry-run the
+#    whole plan (touches nothing) and install for real:
+helm registry login <registry.server>                        # the ACR/Artifactory you install FROM
 ./install.sh --dry-run
-./install.sh
+./install.sh                               # non-interactive / CI: add --yes to skip the confirm prompt
 ```
 
 `install.sh` regenerates the overlays and re-runs the static preflight itself, so

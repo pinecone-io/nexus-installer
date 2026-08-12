@@ -432,8 +432,8 @@ def check_live(inp):
         warn(
             f"registry.server '{acr or '(unset)'}' is not an ACR (or azure.subscription unset) — "
             "cannot pre-verify presence for a pull-through/remote registry; images resolve "
-            "lazily on first pull. Confirm the remote's upstream repo covers EVERY source repo "
-            "listed by image-manifest.sh (this bundle spans more than one)."
+            "lazily on first pull. Confirm the remote fronts the single upstream repo the "
+            "bundle publishes from (image-manifest.sh lists it) so it resolves the whole bundle."
         )
     else:
         with open(manifest) as f:
