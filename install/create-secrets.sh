@@ -8,7 +8,7 @@
 #   - the storage-key Secret (shared_key auth only)
 #
 # Model provider keys are NOT created here — they are injected at install time via
-# --set (install.sh), matching the runbook; the nexus chart materializes them.
+# --set (install.sh); the nexus chart materializes them.
 #
 # Usage: ./create-secrets.sh                 # applies
 #        ./create-secrets.sh --dry-run       # prints what it would do, touches nothing

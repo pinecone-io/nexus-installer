@@ -45,7 +45,7 @@ CONTAINER_SUFFIXES = [
     "nexus-library",
 ]
 
-# Nexus images the chart deploys (runbook 0b) + the DB set + FoundationDB. Used by the
+# Nexus images the chart deploys + the DB set + FoundationDB. Used by the
 # live image-presence check; mirror.sh derives the authoritative list from the render.
 NEXUS_IMAGES = [
     "nexus_api", "nexus_orchestrator", "nexus_runtime", "nexus_gateway",
@@ -326,13 +326,13 @@ def check_inference(inp):
     else:
         fail(f"chat tiers incomplete — lite/standard/pro must all be set, got {chat_tiers}")
 
-    # Naming guardrail from runbook 0d — advisory, not fatal (customer may differ).
+    # Naming guardrail — advisory, not fatal (customer may differ).
     for field, name in {"embeddingDeployment": "text-embedding-3-small", "rerankDeployment": "rerank-v3.5"}.items():
         val = get(inp, f"inference.{field}")
         if val != name:
             warn(
-                f"inference.{field}={val!r}: runbook 0d expects the deployment named "
-                f"{name!r} (the router matches on the deployment name)."
+                f"inference.{field}={val!r}: the router expects the deployment named "
+                f"{name!r} (it matches on the deployment name)."
             )
 
 

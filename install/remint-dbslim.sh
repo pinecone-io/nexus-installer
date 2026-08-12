@@ -6,8 +6,8 @@
 # into the generated db-slim values at build time; the OCI path cannot override them
 # (see README "OCI vs local-chart path"). To install at a non-default dimension (e.g.
 # 1536 for text-embedding-3-small) or with a freshly minted index id, you install from
-# a chart checkout after regenerating its db-slim values for those values. This runs
-# the runbook step 2a against that checkout.
+# a chart checkout after regenerating its db-slim values for those values. This
+# regenerates those values against that checkout.
 #
 # Usage:
 #   ./remint-dbslim.sh --chart-path DIR [--id UUID] [--dimension N]
