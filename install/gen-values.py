@@ -10,7 +10,7 @@ every field) and emits, into the output dir (default install/generated/):
                           data-dir overlay + nexus.config.cloud=azure.
   values.self-hosted.yaml self-hosted config profile + the inference catalog + tiers +
                           empty providerKeys stubs (real keys are --set at install).
-  inputs.env              non-secret scalars install.sh / mirror.sh / create-secrets.sh
+  inputs.env              non-secret scalars install.sh / image-manifest.sh / create-secrets.sh
                           need, so bash needs no YAML parser. Contains NO secrets.
 
 Deterministic and secret-free: no key material is ever read or written here — the
@@ -278,7 +278,7 @@ def build_self_hosted_values(inp, dim):
 
 
 def build_inputs_env(inp, dim, outdir):
-    """Non-secret scalars install.sh / mirror.sh / create-secrets.sh consume."""
+    """Non-secret scalars install.sh / image-manifest.sh / create-secrets.sh consume."""
     idx_id = req(inp, "staticIndex.id")
     auth = opt(inp, "storage.auth", "shared_key")
     baked_dim = int(req(inp, "bundle.bakedDimension"))

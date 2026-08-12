@@ -5,7 +5,7 @@
 # pull-through remote that caches on first pull). preflight.py --live checks the
 # manifest this writes (generated/manifest.txt).
 #
-# Usage: ./mirror.sh [--list] [--chart-path DIR]
+# Usage: ./image-manifest.sh [--list] [--chart-path DIR]
 #   --chart-path renders the chart for exact source+dest refs; without it a static
 #   fallback keyed off the bundle tags is printed and flagged approximate.
 set -euo pipefail

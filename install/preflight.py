@@ -46,7 +46,7 @@ CONTAINER_SUFFIXES = [
 ]
 
 # Nexus images the chart deploys + the DB set + FoundationDB. Used by the
-# live image-presence check; mirror.sh derives the authoritative list from the render.
+# live image-presence check; image-manifest.sh derives the authoritative list from the render.
 NEXUS_IMAGES = [
     "nexus_api", "nexus_orchestrator", "nexus_runtime", "nexus_gateway",
     "nexus_console", "nexus_mcp", "nexus_auth", "nexus_inference_proxy",
@@ -417,7 +417,7 @@ def check_live(inp):
                 )
 
     section("LIVE: mirrored images")
-    # Verify the exact refs the install pulls, from the manifest mirror.sh writes
+    # Verify the exact refs the install pulls, from the manifest image-manifest.sh writes
     # (generated/manifest.txt) — the chart render is the source of truth for tags.
     acr = get(inp, "registry.server", "")
     acr_name = acr.split(".")[0] if acr else ""
@@ -425,7 +425,7 @@ def check_live(inp):
     manifest = os.path.join(_gen_dir, "manifest.txt")
     if not os.path.exists(manifest):
         warn(
-            "no generated/manifest.txt — run `./mirror.sh --list --chart-path <chart>` "
+            "no generated/manifest.txt — run `./image-manifest.sh --list --chart-path <chart>` "
             "first to record the exact refs the install pulls; skipping presence check"
         )
     elif not (sub and acr_name and is_acr):
@@ -436,7 +436,7 @@ def check_live(inp):
             f"registry.server '{acr or '(unset)'}' is not an ACR (or azure.subscription unset) — "
             "cannot pre-verify presence for a pull-through/remote registry; images resolve "
             "lazily on first pull. Confirm the remote's upstream repo covers EVERY source repo "
-            "listed by mirror.sh (this bundle spans more than one)."
+            "listed by image-manifest.sh (this bundle spans more than one)."
         )
     else:
         with open(manifest) as f:
