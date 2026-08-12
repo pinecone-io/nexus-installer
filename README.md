@@ -1,8 +1,8 @@
 # nexus-installer
 
-Self-managed Nexus installer — deploy Pinecone Nexus into a **customer-operated
-Kubernetes cluster** (on-prem or the customer's own cloud account). This is the
-self-managed counterpart to Pinecone-managed BYOC (Pulumi) and the fully managed cloud.
+Self-hosted Nexus installer — deploy Pinecone Nexus into a **customer-operated
+Kubernetes cluster** (in your own data center or your own cloud account). This is the
+self-hosted counterpart to Pinecone-managed BYOC (Pulumi) and the fully managed cloud.
 
 ## Contents
 
@@ -16,5 +16,7 @@ self-managed counterpart to Pinecone-managed BYOC (Pulumi) and the fully managed
   it. It is **not** a dependency of the install — it only stands up infrastructure the chart
   then installs onto. See its README for details.
 
-_The umbrella Helm chart currently lives in-tree at `nexus/deploy/installer/chart/`; its
-migration into this repo is tracked separately._
+_The umbrella Helm chart is built and published as an OCI artifact alongside the image
+bundle; you consume it via `mirror.sh` + `install.sh`. The local-chart path is only for a
+non-default embedding dimension or a freshly minted index id, where Pinecone provides a
+chart checkout._

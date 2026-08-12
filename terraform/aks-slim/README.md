@@ -1,6 +1,6 @@
 # terraform/aks-slim — optional turnkey AKS cluster (slim install)
 
-Stands up a **deliberately vanilla** AKS cluster for a self-managed Nexus **slim** install. It
+Stands up a **deliberately vanilla** AKS cluster for a self-hosted Nexus **slim** install. It
 mirrors a customer's own Kubernetes cluster so the install exercises the real path — in
 particular the **empty-nodeSelector** scheduling behaviour: there are **no `nexus-role` node
 labels or taints** and no dedicated Nexus pools, so a regression there surfaces here instead of
@@ -8,7 +8,7 @@ hiding.
 
 **Optional by design.** A customer bringing their own cluster (and/or their own blob storage +
 identity) skips this — it is not a dependency of the chart. It is the executable twin of the
-self-managed prerequisites.
+self-hosted prerequisites.
 
 ## Naming
 

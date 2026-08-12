@@ -16,7 +16,7 @@ every field) and emits, into the output dir (default install/generated/):
 Deterministic and secret-free: no key material is ever read or written here — the
 catalog carries api_key_ref names only, and install.sh injects the values via --set.
 
-Style follows nexus/deploy/installer/chart/scripts/gen-dbslim-values.py (python3 + PyYAML).
+Style follows the chart's gen-dbslim-values.py (python3 + PyYAML).
 
 Usage: python3 gen-values.py [-f customer.yaml] [-o generated/]
 """
