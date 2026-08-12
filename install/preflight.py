@@ -417,8 +417,7 @@ def check_live(inp):
                 )
 
     section("LIVE: mirrored images")
-    # Tags come from the render (generated/manifest.txt), not bundle.tag — the chart
-    # can bake a different image tag than the bundle version.
+    # tags come from the render (manifest.txt); the chart can bake a tag other than bundle.tag
     acr = get(inp, "registry.server", "")
     acr_name = acr.split(".")[0] if acr else ""
     is_acr = acr.endswith(".azurecr.io")
@@ -429,9 +428,7 @@ def check_live(inp):
             "first to record the exact refs the install pulls; skipping presence check"
         )
     elif not (sub and acr_name and is_acr):
-        # A pull-through / remote registry (e.g. JFrog Artifactory remote) caches
-        # lazily; there is no cross-registry 'list tags' and a probe would trigger a
-        # cache-fill. Report, don't fail — presence resolves on first pull.
+        # a pull-through registry caches on first pull; there is no tag list to check
         warn(
             f"registry.server '{acr or '(unset)'}' is not an ACR (or azure.subscription unset) — "
             "cannot pre-verify presence for a pull-through/remote registry; images resolve "

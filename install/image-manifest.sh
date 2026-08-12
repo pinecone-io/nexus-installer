@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# Image + chart manifest — print the exact artifacts the install pulls so you can
-# confirm they are present in your registry first. This does NOT copy anything;
-# getting images into your registry is your pipeline's job (an active copy, or a
-# pull-through remote that caches on first pull). preflight.py --live checks the
-# manifest this writes (generated/manifest.txt).
+# Print the images + OCI chart the install pulls, so you can confirm they are staged
+# in your registry (this copies nothing — staging is your pipeline's job). Writes
+# generated/manifest.txt, which preflight.py --live verifies.
 #
 # Usage: ./image-manifest.sh [--list] [--chart-path DIR]
-#   --chart-path renders the chart for exact source+dest refs; without it a static
-#   fallback keyed off the bundle tags is printed and flagged approximate.
+#   --chart-path renders the chart for exact refs; otherwise a static, approximate list.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
@@ -24,14 +21,10 @@ done
 
 load_inputs_env
 
-# Fallback image set when no chart render is available (approximate — see header).
 NEXUS_IMAGES=(nexus_api nexus_orchestrator nexus_runtime nexus_gateway nexus_console \
               nexus_mcp nexus_auth nexus_inference_proxy nexus_file_proxy)
 DB_IMAGES=(docs-api index-builder query-routers query-executors-slab request-log-writers)
 
-# "SOURCE_REF<TAB><name>:<tag>" per image, resolved against sourceRegistry — the one
-# repo the whole bundle is promoted into. A render gives exact tags; else a static
-# fallback, approximate.
 source_refs() {
   if [ -n "$CHART_PATH" ] && command -v helm >/dev/null 2>&1; then
     local rendered
@@ -40,8 +33,7 @@ source_refs() {
       --set nexus.auth.jwtSecret=x --set nexus.config.byocSessionCredential=x 2>/dev/null)
     {
       printf '%s\n' "$rendered" | grep -oE 'image: "?[^"]+' | sed -E 's/^image: "?//'
-      # the task runtime is pulled by the orchestrator at task time, so it lands in
-      # config rather than a pod image: field — grep it out separately.
+      # runtime image is pulled at task time, so it lands in config, not a pod image:
       printf '%s\n' "$rendered" | grep -oE '[A-Za-z0-9._/-]+/nexus_runtime:[A-Za-z0-9._-]+'
     } | while IFS= read -r ref; do [ -n "$ref" ] && printf '%s\t%s\n' "$ref" "${ref##*/}"; done | sort -u
     return

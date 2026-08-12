@@ -207,8 +207,7 @@ def build_self_hosted_values(inp, dim):
     embed = req(inp, "inference.embeddingDeployment")
     rerank = req(inp, "inference.rerankDeployment")
 
-    # One chat deployment surfaced as three distinct tier models — the proxy
-    # requires lite/standard/pro to each resolve to a distinct model ref.
+    # the proxy requires each tier to resolve to a distinct model ref
     tier_labels = {"lite": "Chat (lite)", "standard": "Chat (standard)", "pro": "Chat (pro)"}
     llm_models = {
         f"chat-{t}": {
