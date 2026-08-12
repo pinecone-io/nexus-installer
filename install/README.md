@@ -5,7 +5,7 @@ single inputs file. This toolkit turns the manual install — gather ~11 inputs,
 hand-populate two values files plus several `--set` flags, create secrets, mirror
 images — into: **fill one file → generate → validate → install.**
 
-It automates the verified install runbook. A wrong value in one of the consistency
+It automates the whole install. A wrong value in one of the consistency
 invariants (embedding dimension, container names, registry override, workload
 identity) otherwise produces a green `helm install` that boot-panics or fails on
 first ingest; here those mismatches **fail at preflight, before install**.
@@ -34,20 +34,22 @@ gitignored.
 
 ## Prerequisites you own
 
-Before running anything (full detail in the runbook Pinecone provides):
+Before running anything:
 
 - **A cluster.** Kubernetes 1.35, ≥ 2 amd64 nodes, a default StorageClass, and node
   egress to your registry, storage account, and model endpoints. Greenfield? The
   optional `terraform/aks-slim` module in this repo stands up a conforming AKS cluster.
 - **A registry mirror.** The image bundle + the OCI chart copied under one base path
   in your ACR/Artifactory, plus a pull credential. `mirror.sh` does the copy.
-- **Azure Blob storage.** One StorageV2 account and the **seven pre-created
-  containers** — the stack does not create them. Names derive from your stem:
-  `<stem>-db` plus `<stem>-nexus-{source,knowledge,archive,traces,snapshots,library}`.
+- **Azure Blob storage.** One StorageV2 account and its **seven containers** (the stack
+  does not create them). The optional `terraform/aks-slim` module provisions them for
+  you; otherwise create them before install. Names derive from your stem: `<stem>-db`
+  plus `<stem>-nexus-{source,knowledge,archive,traces,snapshots,library}`.
 - **Model deployments** (chat, embedding, rerank) on OpenAI-compatible endpoints. The
-  deployment names must be names the routing library recognizes (Pinecone provides the
-  table). **The embedding model's dimension fixes the index dimension and is immutable
-  after install.**
+  deployment names must match names the routing library recognizes — chat `gpt-5`,
+  embedding `text-embedding-3-small`, and the rerank deployment named literally
+  `rerank-v3.5` (even when it serves a newer Cohere rerank model). **The embedding
+  model's dimension fixes the index dimension and is immutable after install.**
 - **Tooling:** `kubectl`, `helm`, `python3` + PyYAML, `openssl`; `az` and `skopeo` for
   the live checks / mirror.
 
@@ -82,6 +84,30 @@ python3 preflight.py --live                # optional: containers/images/identit
 
 `install.sh` regenerates the overlays and re-runs preflight itself, so step 2 is
 optional before step 3/4 — it's there so you can inspect the artifacts first.
+
+## Verify the install
+
+When `install.sh` returns, confirm the stack is healthy and then exercise it end to end.
+
+1. **Pods.** Every pod is `Running` / `Ready` (14 total):
+
+   ```bash
+   kubectl --context <kubeContext> -n <namespace> get pods
+   ```
+
+2. **API reachable.** Through your ingress — or, before ingress is wired, a
+   `kubectl port-forward` to the `nexus-gateway` Service — the version endpoint answers:
+
+   ```bash
+   curl -fsS https://<your-host>/api/v0/version
+   ```
+
+3. **Functional smoke test.** Open the console at your host and sign in with the session
+   credential (`install.sh` writes it to `.secrets.env`). Create a context, add a source,
+   run curate, then run a query. A successful answer with citations exercises the whole
+   path — embedding on ingest, the vector index on query, and chat + rerank through the
+   inference proxy to your endpoints — and is the check that confirms your model endpoints
+   are correctly wired.
 
 ## The inputs, one-to-one
 
@@ -174,7 +200,7 @@ engineer typically finishes hands-on:
 1. **Ingress.** The gateway is `ClusterIP` by default; set `ingress.*` and wire your
    controller/DNS/TLS, or Pinecone helps expose it.
 2. **First functional verification** (ingest → curate → query → chat) against your real
-   model endpoints — the runbook's smoke test.
+   model endpoints — see **Verify the install** above.
 3. **Model endpoint tuning** (e.g. raising the rerank deployment's throughput quota).
 
 ## Notes

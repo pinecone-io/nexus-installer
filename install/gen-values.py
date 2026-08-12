@@ -29,7 +29,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# The seven container suffixes are a fixed product contract (see the runbook 0c and
+# The seven container suffixes are a fixed product contract (see
 # terraform/aks-slim/modules/storage-identity/main.tf). The stem supplies the rest.
 CONTAINER_SUFFIXES = [
     "db",
@@ -207,7 +207,7 @@ def build_self_hosted_values(inp, dim):
     embed = req(inp, "inference.embeddingDeployment")
     rerank = req(inp, "inference.rerankDeployment")
 
-    # One chat model, three tiers pointed at it — the validated runbook 0d shape
+    # One chat model, three tiers pointed at it — the validated shape
     # (a single gpt-5-backed chat deployment; additional chat models are roadmap).
     llm_models = {
         "chat": {

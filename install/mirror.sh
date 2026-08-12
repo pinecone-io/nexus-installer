@@ -5,7 +5,7 @@
 #
 # The authoritative image list is DERIVED from the chart render (the chart's own
 # `image:` refs), so it can never drift from what the install actually pulls. A
-# static fallback list (runbook 0b) is used when a render is not available.
+# static fallback list is used when a render is not available.
 #
 # Copy engine: skopeo if present, else `az acr import` (server-side, no local pull).
 #
@@ -35,7 +35,7 @@ done
 
 load_inputs_env
 
-# Nexus images the chart deploys (runbook 0b). Fallback when no render is available.
+# Nexus images the chart deploys. Fallback when no render is available.
 NEXUS_IMAGES=(nexus_api nexus_orchestrator nexus_runtime nexus_gateway nexus_console \
               nexus_mcp nexus_auth nexus_inference_proxy nexus_file_proxy)
 DB_IMAGES=(docs-api index-builder query-routers query-executors-slab request-log-writers)
@@ -64,7 +64,7 @@ if [ "$MODE" = list ]; then
   echo "# OCI chart:"
   echo "  $CHART_ARTIFACT"
   cat <<EOF
-# Known public-registry gap (runbook 0b): a few auxiliary images are not under the
+# Known public-registry gap: a few auxiliary images are not under the
 # registry override (bitnami/bitnamisecure kubectl helpers, registry.k8s.io/pause:3.9,
 # alpine/k8s). In a no-egress posture, allow those pulls or preload them on the nodes.
 EOF

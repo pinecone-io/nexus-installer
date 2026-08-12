@@ -11,7 +11,7 @@
 # Re-runnable: the two generated release credentials are persisted (0600) to
 # install/.secrets.env on first run and reused, so re-installs keep stable creds.
 # NOTE: this chart is install-only — to iterate, uninstall + delete PVCs, then
-# re-run (see README / runbook 3). Never `helm upgrade` it.
+# re-run (see README). Never `helm upgrade` it.
 #
 # Usage:
 #   ./install.sh [--dry-run] [--path auto|oci|local] [--chart-path DIR]
@@ -159,7 +159,7 @@ fi
 log "creating secrets"
 "$HERE/create-secrets.sh"
 
-log "helm install (patient foreground; do NOT Ctrl-C while it waits on the verify hook — see runbook 3)"
+log "helm install (patient foreground; do NOT Ctrl-C while it waits on the verify hook)"
 helm --kube-context "$KUBE_CONTEXT" install "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
   -n "$NAMESPACE" "${OVERLAYS[@]}" "${SET_ARGS[@]}" --timeout 10m
 
