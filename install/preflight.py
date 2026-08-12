@@ -185,43 +185,66 @@ KNOWN_NATIVE_DIMS = {
 }
 
 
+def _embedding_facts(inp):
+    """Effective (model_name, declared_dim, request_dimensions) from the emitted
+    self-hosted overlay when present (the artifact that ships), else from inputs with
+    the same Matryoshka auto-default the generator applies."""
+    gsh = load_gen("values.self-hosted.yaml")
+    ems = get(gsh, "nexus.inference.embeddingModels") if gsh else None
+    if ems:
+        tiers = get(gsh, "nexus.inference.tiers") or {}
+        key = tiers.get("embedding") or next(iter(ems))
+        e = ems.get(key, {}) or {}
+        model = str(e.get("model", "")).split("/")[-1]
+        return model, e.get("dimension"), bool(e.get("request_dimensions", False))
+    model = get(inp, "inference.embeddingDeployment") or ""
+    req = get(inp, "embedding.requestDimensions", None)
+    if req is None:
+        req = model.lower().startswith("text-embedding-3")
+    return model, get(inp, "embedding.dimension"), bool(req)
+
+
 def check_embedding_width(inp):
     section("Embedding model output width")
-    dim = get(inp, "embedding.dimension")
-    embed = (get(inp, "inference.embeddingDeployment") or "").lower()
-    req = bool(get(inp, "embedding.requestDimensions", False))
-    if dim is None or not embed:
+    model, dim, req = _embedding_facts(inp)
+    model = model.lower()
+    baked = get(inp, "bundle.bakedDimension")
+    if dim is None or not model:
         return
     native = matryoshka = None
     for name, (width, matr) in KNOWN_NATIVE_DIMS.items():
-        if name in embed:
+        if name in model:
             native, matryoshka = width, matr
             break
     if native is None:
-        warn(f"unknown embedding model '{embed}' — can't verify its native width equals {dim}")
+        warn(f"unknown embedding model '{model}' — can't verify its native width equals {dim}")
         return
     if native == int(dim):
-        ok(f"'{embed}' native width {native} == target dimension {dim}")
-        if req:
-            warn("embedding.requestDimensions is set but the target equals the native width — no-op")
+        ok(f"'{model}' native width {native} == target dimension {dim} (no reduction needed)")
         return
-    # target != native.
-    if not req:
-        fail(
-            f"'{embed}' emits {native}-wide vectors natively but embedding.dimension={dim}. "
-            f"Set embedding.requestDimensions: true (Matryoshka reduction, needs a bundle whose "
-            f"proxy honors it — nexus#1701) or set the dimension to {native}. Otherwise the "
-            "vectors won't match the index and ingest fails."
+    # target != native: the model must be asked to reduce, and must be able to.
+    if matryoshka and req:
+        ok(
+            f"'{model}' native {native} -> request_dimensions asks for {dim} (Matryoshka; "
+            "needs a bundle whose proxy honors the dimensions request, nexus#1701)"
         )
-    elif not matryoshka:
+    elif matryoshka and not req:
         fail(
-            f"'{embed}' is not a Matryoshka model, so requestDimensions can't reduce {native}->{dim}. "
-            f"Use dimension {native} or a reducible model (text-embedding-3-*)."
+            f"'{model}' emits {native}-wide vectors natively but the declared dimension is {dim}. "
+            "Set embedding.requestDimensions: true so the model truncates to the declared width "
+            "(Matryoshka; needs a bundle whose proxy honors it — nexus#1701). Otherwise the vectors "
+            "won't match the index and ingest fails."
         )
     else:
-        ok(
-            f"'{embed}' native {native} -> requestDimensions asks for {dim} (Matryoshka; "
-            "needs a bundle with the dimensions passthrough, nexus#1701)"
+        # Non-Matryoshka model that can't reach the declared width by reduction.
+        via = ""
+        if baked is not None and int(native) != int(baked):
+            via = (f" Since {native} != the baked default {baked}, that is the local-chart path "
+                   "(remint-dbslim.sh + install.sh --path local).")
+        fail(
+            f"'{model}' is not reducible, so it can't emit the declared dimension {dim} "
+            f"(it outputs {native}). Set the dimension to {native} or choose a Matryoshka model "
+            f"(text-embedding-3-*).{via}"
         )
 
 
