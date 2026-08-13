@@ -28,6 +28,8 @@ touching nothing.
 | `image-manifest.sh` | Prints the exact images + OCI chart the install pulls (writes `generated/manifest.txt`), which `preflight --live` then verifies. Copies nothing — staging them in your registry is your pipeline's job. |
 | `remint-dbslim.sh` | Local-chart helper for a non-default embedding dimension / fresh index id (see "OCI vs local-chart path"). |
 | `tf-to-inputs.sh` | Emits the storage/identity half of `customer.yaml` from the `aks-slim` Terraform outputs. |
+| `support-bundle.sh` | Collects a redacted diagnostic archive to send to Pinecone when something goes wrong (see "Getting support"). |
+| `redact.py` | The redaction pass `support-bundle.sh` runs over everything it collects. |
 
 Generated files (`generated/`), your filled `customer.yaml`, and `.secrets.env` are
 gitignored.
@@ -236,6 +238,38 @@ engineer typically finishes hands-on:
 2. **First functional verification** (ingest → curate → query → chat) against your real
    model endpoints — see **Verify the install** above.
 3. **Model endpoint tuning** (e.g. raising the rerank deployment's throughput quota).
+
+## Getting support
+
+No telemetry leaves your tenancy, so a diagnostic archive you send us is the whole
+support channel. `support-bundle.sh` produces one:
+
+```bash
+./support-bundle.sh                 # writes ./nexus-support-<timestamp>.tgz
+./support-bundle.sh --since 72h     # widen the log window for an older incident
+./support-bundle.sh --exec          # add the version probe and `fdbcli status`
+```
+
+It collects cluster and node facts, the namespaced objects the stack uses, pod logs
+(current and previous), namespace events, the Helm release, a re-run of static
+preflight, and your generated inputs. It uploads nothing — the archive is written
+locally for you to send.
+
+- **Read-only by default.** Only `get`/`describe`/`logs`. `--exec` is the one flag that
+  needs `create` on a pod subresource, and it covers both collectors that do: the
+  gateway version probe (`pods/portforward`) and `fdbcli status` (`pods/exec`).
+- **Secrets.** Secret values, the chart's `providerKeys` block, and credential-shaped
+  values everywhere else are replaced with `[REDACTED]` by `redact.py`; key *names*
+  are kept, since they are what makes a bundle diagnosable. `.secrets.env` is never
+  read. A file that cannot be scanned (binary or oversized) is removed rather than
+  shipped. `REDACTIONS.txt` reports both. Redaction is pattern-based in the
+  unstructured parts — review the archive before sending it.
+- **Partial bundles are expected.** A collector that fails is recorded in
+  `collection-errors.log`; the archive is still produced. Run it *while* the problem
+  is visible.
+- **Task pods are transient.** Import and curate run in pods that are removed when
+  they finish, so a bundle taken afterwards will not contain their logs. If a task
+  is what failed, capture `kubectl -n <namespace> logs <task-pod>` while it is alive.
 
 ## Notes
 
