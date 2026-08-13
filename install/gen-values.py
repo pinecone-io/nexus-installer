@@ -25,7 +25,13 @@ import os
 import shlex
 import sys
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:
+    sys.exit(
+        "PyYAML is required but not installed. From the install/ directory, run:\n"
+        "  python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+    )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 

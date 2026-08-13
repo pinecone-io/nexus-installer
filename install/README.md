@@ -58,8 +58,13 @@ Before running anything:
   embedding `text-embedding-3-small`, and the rerank deployment named literally
   `rerank-v3.5` (even when it serves a newer Cohere rerank model). **The embedding
   model's dimension fixes the index dimension and is immutable after install.**
-- **Tooling:** `kubectl`, `helm`, `python3` + PyYAML, `openssl`; `az` for the live
-  preflight checks.
+- **Tooling:** `kubectl`, `helm`, `python3`, `openssl`; `az` for the live preflight checks.
+  Install the one Python dependency (PyYAML) into a virtualenv and keep it active for the
+  run (the generator, preflight, and install wrapper all use it):
+  ```bash
+  python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+  ```
+  (On macOS this avoids PEP 668 "externally-managed-environment" errors from a system pip.)
 
 ## Quick start
 
