@@ -4,3 +4,4 @@ customer.yaml
 generated/
 .secrets.env
 __pycache__/
+nexus-support-*.tgz
