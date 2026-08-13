@@ -6,3 +6,5 @@ generated/
 __pycache__/
 .venv/
 nexus-support-*.tgz
+nexus-installer/
+nexus-installer-*.tgz
