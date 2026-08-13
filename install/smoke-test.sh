@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Post-install functional smoke test — proves the whole chain end to end:
-# login -> create context -> import a document -> curate -> chat query, and
-# asserts a grounded, cited answer comes back. A passing run confirms the model
-# endpoints (embedding on ingest, chat + rerank on query) are wired correctly.
+# login -> create context -> import a document -> curate -> retrieval -> chat
+# query. It asserts semantic retrieval actually returns hits and that a grounded,
+# cited answer comes back. A passing run confirms the model endpoints (embedding
+# on ingest, chat + rerank on query) are wired and the index is serving results.
 #
 # It talks to the gateway (the single front door the ingress will front), so it
 # also exercises the nexus-auth auth_request the ingress relies on. By default it
@@ -106,15 +107,15 @@ TOKEN="$(jq -n --arg k "$NEXUS_SESSION_CREDENTIAL" '{api_key:$k}' \
   | jq -r '.token // empty')"
 [ -n "$TOKEN" ] || die "login failed — check NEXUS_SESSION_CREDENTIAL"
 AUTH="Authorization: Bearer $TOKEN"
-log "1/5 login OK"
+log "1/6 login OK"
 
 # --- 2. create context (tolerant of a re-run) --------------------------------
 CREATE="$(api POST /api/contexts -H 'Content-Type: application/json' \
   -d "{\"slug\":\"$SLUG\",\"name\":\"Smoke Check\"}")"
 if [ "$(printf '%s' "$CREATE" | jq -r '.slug // empty')" = "$SLUG" ]; then
-  log "2/5 created context '$SLUG'"
+  log "2/6 created context '$SLUG'"
 elif api GET "/api/contexts/$SLUG" | jq -e '.slug' >/dev/null 2>&1; then
-  log "2/5 context '$SLUG' already exists — reusing"
+  log "2/6 context '$SLUG' already exists — reusing"
 else
   die "could not create or find context '$SLUG': $(printf '%s' "$CREATE" | jq -r '.error // .')"
 fi
@@ -129,7 +130,7 @@ BODY="$(poll "/api/tasks/$IMPORT_TASK" state '^completed$' '^(failed|cancelled)$
   || die "import task did not complete"
 printf '%s' "$BODY" | jq -e '.output.status == "success" and .output.failed == 0 and .output.imported_items >= 1' \
   >/dev/null || die "import completed but did not import the document cleanly"
-log "3/5 import OK (imported_items=$(printf '%s' "$BODY" | jq -r '.output.imported_items'))"
+log "3/6 import OK (imported_items=$(printf '%s' "$BODY" | jq -r '.output.imported_items'))"
 
 # --- 4. curate ---------------------------------------------------------------
 CURATE_TASK="$(api POST "/api/contexts/$SLUG/curate" -H 'Content-Type: application/json' -d '{}' \
@@ -139,9 +140,23 @@ BODY="$(poll "/api/tasks/$CURATE_TASK" state '^completed$' '^(failed|cancelled)$
   || die "curate task did not complete"
 printf '%s' "$BODY" | jq -e '.output.flipped == true and .output.delta.failed == 0 and .output.delta.chunks_created >= 1' \
   >/dev/null || die "curate completed but produced no searchable chunks"
-log "4/5 curate OK (chunks_created=$(printf '%s' "$BODY" | jq -r '.output.delta.chunks_created'))"
+log "4/6 curate OK (chunks_created=$(printf '%s' "$BODY" | jq -r '.output.delta.chunks_created'))"
 
-# --- 5. chat query -----------------------------------------------------------
+# --- 5. retrieval-only query -------------------------------------------------
+# Chat can ground on a fetched source file, so a cited answer alone can mask a
+# dead index; assert retrieval itself returns hits.
+RQID="$(api POST /api/query -H 'Content-Type: application/json' \
+  -d "{\"ask\":\"What is the Larkspur Line ticket price?\",\"scope\":[\"$SLUG\"],\"retrieval_only\":true,\"background\":true}" \
+  | jq -r '.id // empty')"
+[ -n "$RQID" ] || die "retrieval query was not accepted"
+BODY="$(poll "/api/queries/$RQID" status '^completed$' '^(failed|error|cancelled)$' 120)" \
+  || die "retrieval query did not complete"
+HITS="$(printf '%s' "$BODY" | jq -r '.rollup.total_hits // 0')"
+[ "$HITS" -ge 1 ] \
+  || die "retrieval returned 0 hits — the semantic index is not serving results (db-slim slab-serving / pc-lease); chat can still answer via file fetch, so this is a real failure."
+log "5/6 retrieval OK (total_hits=$HITS)"
+
+# --- 6. chat query -----------------------------------------------------------
 # A cited answer is the check that proves the model endpoints are wired:
 # embedding on ingest, and chat + rerank through the inference proxy on query.
 QID="$(api POST /api/query -H 'Content-Type: application/json' \
@@ -154,7 +169,7 @@ ANSWER="$(printf '%s' "$BODY" | jq -r '[.output[]?.content[]?.text] | join("")')
 CITES="$(printf '%s' "$BODY" | jq -r '.citations | length')"
 [ -n "$ANSWER" ] && [ "$CITES" -ge 1 ] \
   || die "query returned no grounded answer (answer empty or no citations) — check the model endpoints"
-log "5/5 chat OK — answer: $ANSWER"
+log "6/6 chat OK — answer: $ANSWER"
 
 # --- cleanup -----------------------------------------------------------------
 if [ "$KEEP" = 1 ]; then
