@@ -14,4 +14,30 @@ locals {
     "managed-by" = "terraform"
     environment  = var.environment
   }, var.tags)
+
+  # Every SA whose pods reach Blob under workload identity — unfederated ones 401. Keep in
+  # sync with the chart (file-proxy shares nexus-api, task pods share nexus-orchestrator).
+  blob_accessing_service_accounts = [
+    "${var.helm_release_name}-api",
+    "${var.helm_release_name}-orchestrator",
+    "docs-api-sa",
+    "index-builders-slab-sa",
+    "query-routers-sa",
+    "query-executors-slab-sa",
+    "request-log-writers-sa",
+  ]
+
+  default_federated_credentials = [
+    for sa in local.blob_accessing_service_accounts : {
+      name            = sa
+      namespace       = var.helm_namespace
+      service_account = sa
+    }
+  ]
+
+  # Derived defaults plus operator extras; keyed by name so an extra overrides on collision.
+  effective_federated_credentials = values(merge(
+    { for fc in local.default_federated_credentials : fc.name => fc },
+    { for fc in var.workload_federated_credentials : fc.name => fc },
+  ))
 }

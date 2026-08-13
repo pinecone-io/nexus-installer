@@ -25,8 +25,13 @@ enable_storage_identity = true
 # feeds the chart's blob.abs.container. Null -> <name_prefix>-<environment>.
 blob_container_prefix = "acme"
 
-# Add once the Helm release namespace + service account are fixed.
-# The chart installs single-namespace; service_account = pinecone.serviceAccount.name.
+# Workload-identity federation is automatic — the module federates every blob-accessing SA
+# the chart runs. Set nothing for a standard install.
+#
+# helm_release_name = "nexus"   # release name you `helm install` with
+# helm_namespace    = "nexus"   # namespace the chart installs into
+#
+# Extra (non-standard) SAs only, appended to the derived set:
 # workload_federated_credentials = [
-#   { name = "nexus-blob", namespace = "nexus", service_account = "nexus" },
+#   { name = "my-extra-sa", namespace = "nexus", service_account = "my-extra-sa" },
 # ]

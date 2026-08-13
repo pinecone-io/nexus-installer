@@ -171,17 +171,20 @@ variable "blob_container_prefix" {
   default     = null
 }
 
-variable "workload_federated_credentials" {
-  description = <<-EOT
-    Azure Workload Identity federated credentials binding the Nexus workload UAMI to
-    Kubernetes service accounts via the AKS OIDC issuer. Each entry creates one credential
-    with subject system:serviceaccount:<namespace>:<service_account>.
+variable "helm_release_name" {
+  description = "Helm release name; the derived nexus-* blob SAs follow it. Match your `helm install`."
+  type        = string
+  default     = "nexus"
+}
 
-    These must match the Helm release namespace and the service account the umbrella chart
-    creates (the chart installs single-namespace; SA defaults to pinecone.serviceAccount.name).
-    Leave empty to stand up the UAMI + storage now and add the binding once the SA name is
-    fixed at install.
-  EOT
+variable "helm_namespace" {
+  description = "Namespace the chart installs into; the derived federation binds blob SAs here."
+  type        = string
+  default     = "nexus"
+}
+
+variable "workload_federated_credentials" {
+  description = "Extra federated credentials appended to the derived set. Empty for a standard install; for a non-default release/namespace set helm_release_name/helm_namespace instead."
   type = list(object({
     name            = string
     namespace       = string
