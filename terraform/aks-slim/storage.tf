@@ -12,9 +12,9 @@ module "storage_identity" {
   container_prefix       = local.container_prefix
   aks_subnet_id          = azurerm_subnet.aks.id
 
-  # Workload identity federates against the cluster's OIDC issuer.
+  # Federates against the cluster's OIDC issuer; the derived set (locals.tf) covers the chart's SAs.
   oidc_issuer_url        = azurerm_kubernetes_cluster.this.oidc_issuer_url
-  federated_credentials  = var.workload_federated_credentials
+  federated_credentials  = local.effective_federated_credentials
   workload_identity_name = "id-${local.cluster_name}-nexus"
 
   tags = local.tags

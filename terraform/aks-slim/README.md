@@ -78,7 +78,16 @@ separate container-creation step. (A forthcoming chart release will rename the c
 `blob.abs.container` → `containerPrefix`; the `blob_container` output name should follow once
 it lands.)
 
-The `workload_federated_credentials` variable must match the Helm **release namespace** and the
-**service account** the chart creates (single-namespace install; SA = `pinecone.serviceAccount.name`).
-Leave the variable empty to stand the infra up now and add the binding once the SA name is fixed
-at install time.
+Workload-identity federation is wired **automatically**. The module federates every
+blob-accessing service account the umbrella chart runs — the two `nexus-*` SAs (named after
+`helm_release_name`) plus the five `db-slim` SAs — in `helm_namespace`, both defaulting to
+`nexus`. The full list lives in `locals.tf` (`blob_accessing_service_accounts`), derived by
+rendering the chart with workload-identity auth. For a standard install you set nothing:
+
+- Running under a different release name / namespace? Set `helm_release_name` / `helm_namespace`
+  and the derived set follows.
+- Need an extra (non-standard) service account federated? Add it via `workload_federated_credentials`
+  — entries are appended to the derived set (reuse a derived `name` to override it).
+
+After install, `install/preflight.py --live` verifies the running cluster's blob-accessing SAs
+are all covered.
