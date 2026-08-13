@@ -18,7 +18,8 @@ LIVE checks (--live, opt-in, shells out to az/kubectl):
   - kube context reachable.
   - the seven blob containers exist.
   - every bundle image is present in the mirror at the expected tag.
-  - the workload identity exists and its federated credentials cover the release SA.
+  - the workload identity (resolved from its clientId) has a federated credential for
+    each blob-accessing service account.
 
 Exit 0 only if no check FAILs. WARN never fails the run.
 
@@ -59,6 +60,14 @@ NEXUS_IMAGES = [
     "nexus_file_proxy",
 ]
 DB_IMAGES = ["docs-api", "index-builder", "query-routers", "query-executors-slab", "request-log-writers"]
+
+# The blob-accessing service accounts (namespace + release both "nexus"); each needs a
+# federated credential or its pods 401. Mirrors terraform/aks-slim locals.tf.
+BLOB_SERVICE_ACCOUNTS = [
+    "nexus-api", "nexus-orchestrator",
+    "docs-api-sa", "index-builders-slab-sa", "query-routers-sa",
+    "query-executors-slab-sa", "request-log-writers-sa",
+]
 
 GREEN, RED, YELLOW, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
 if not sys.stdout.isatty():
@@ -476,32 +485,54 @@ def _acr_tag_check(acr_name, sub, repository, tag):
 
 def _check_federation(inp):
     sub = get(inp, "azure.subscription")
-    rg = get(inp, "azure.resourceGroup")
     client_id = get(inp, "storage.clientId")
     ns = "nexus"
-    # The chart installs single-namespace; the blob-accessing SA subject is
-    # system:serviceaccount:nexus:nexus (release SA). Confirm a federated cred covers it.
-    subject = f"system:serviceaccount:{ns}:nexus"
-    if not (sub and rg and client_id):
-        warn("azure.subscription / resourceGroup / storage.clientId incomplete — skipping")
+    if not (sub and client_id):
+        warn("azure.subscription / storage.clientId incomplete — skipping")
         return
+
+    # The inputs carry only the UAMI's client id; resolve its name + resource group from it.
     rc, out = run([
-        "az", "identity", "federated-credential", "list",
-        "--identity-name", "*", "-g", rg, "--subscription", sub, "-o", "json",
+        "az", "identity", "list", "--subscription", sub,
+        "--query", f"[?clientId=='{client_id}'].{{name:name, rg:resourceGroup}}", "-o", "json",
     ])
-    # The identity name is not in the inputs (only its client id), so this is best-effort:
-    # a customer runs it against the UAMI they created. Report guidance rather than a hard fail.
-    if rc != 0:
+    ident = None
+    if rc == 0 and out:
+        try:
+            hits = json.loads(out)
+            ident = hits[0] if hits else None
+        except json.JSONDecodeError:
+            ident = None
+    if not ident:
         warn(
-            "could not enumerate federated credentials without the UAMI name. Verify manually "
-            f"that a federated credential on the UAMI (clientId {client_id}) has subject "
-            f"'{subject}' and the AKS OIDC issuer."
+            f"no managed identity with clientId {client_id} found in subscription {sub} "
+            "(check az access / the id) — skipping federated-credential coverage"
         )
         return
-    if subject in out:
-        ok(f"a federated credential covers subject '{subject}'")
-    else:
-        fail(f"no federated credential found for subject '{subject}' (blob access will 401)")
+
+    name, rg = ident["name"], ident["rg"]
+    rc, out = run([
+        "az", "identity", "federated-credential", "list",
+        "--identity-name", name, "-g", rg, "--subscription", sub, "--query", "[].subject", "-o", "json",
+    ])
+    if rc != 0:
+        warn(f"could not list federated credentials on '{name}': {out.splitlines()[0] if out else 'az error'}")
+        return
+    try:
+        subjects = set(json.loads(out) or [])
+    except json.JSONDecodeError:
+        subjects = set()
+
+    missing = False
+    for sa in BLOB_SERVICE_ACCOUNTS:
+        subject = f"system:serviceaccount:{ns}:{sa}"
+        if subject in subjects:
+            ok(f"federated credential covers {sa}")
+        else:
+            fail(f"no federated credential for {sa} (subject '{subject}') — its pods will 401 on blob")
+            missing = True
+    if not missing:
+        ok(f"all {len(BLOB_SERVICE_ACCOUNTS)} blob-accessing SAs federated on UAMI '{name}'")
 
 
 def main():
