@@ -45,7 +45,9 @@ SENSITIVE_SUFFIXES = (
 
 # Keys that hold an identifier or the name of a secret, never credential material.
 # Kept readable because they are what makes a bundle diagnosable, and exempt from
-# long-hex-string, which their values would otherwise trip.
+# long-hex-string, which their values would otherwise trip. `secretkey` is the ESO field
+# naming a key inside a Secret, not a value — safe unless the stack ever stores a real
+# credential under that exact key.
 REFERENCE_KEYS = (
     "existingsecret",
     "secretkey",
@@ -62,6 +64,10 @@ REFERENCE_VALUE = re.compile(r"^<set to the key ")
 EMPTY_VALUE = re.compile(r"^(?:\"\"|'')$")
 BLOCK_SCALAR = re.compile(r"^[|>](?:[1-9][-+]?|[-+][1-9]?)?(?:[ \t]+#.*)?$")
 
+# This annotation echoes a whole prior object, so it can smuggle a secret past every
+# other layer; it only duplicates the live spec we already collect, so drop it wholesale.
+OPAQUE_DUMP_KEY = re.compile(r"(?i)(?:^|[./])last-applied-configuration$")
+
 QUOTE = r"[\"']?"
 PATTERNS = [
     (
@@ -74,6 +80,13 @@ PATTERNS = [
     (
         "api-key-header",
         re.compile(r"(?i)\b((?:x-)?api[-_]?key[\"']?\s*[:=]\s*" + QUOTE + r")([^\s\"',]+)"),
+        r"\1" + PLACEHOLDER,
+    ),
+    # Recovers an Azure AD client secret the assignment layer misses when it is not the
+    # first key on a line; specific enough to match anywhere without eating prose.
+    (
+        "client-secret",
+        re.compile(r"(?i)\b(client[_-]?secret[\"']?\s*[:=]\s*" + QUOTE + r")([^\s\"',;]+)"),
         r"\1" + PLACEHOLDER,
     ),
     (
@@ -179,6 +192,8 @@ def redact_line(line, counts):
     match = ASSIGNMENT.match(line)
     if match:
         key, value = match.group(2), match.group(4)
+        if OPAQUE_DUMP_KEY.search(key):
+            return _redact_assignment(match, counts, "opaque-dump") or line
         if _is_reference_key(key) or REFERENCE_VALUE.match(value):
             return _apply_patterns(line, counts, skip=("long-hex-string",))
         if _is_sensitive_key(key) and not (" " in key and " " in value):
@@ -328,6 +343,8 @@ SELF_TEST_REDACTED = [
     "  jwtSecret: true",
     "Set-Cookie: nexus_session=opaquevalue; Path=/",
     "  connectionStringName: AccountKey=realkey123;",
+    'msg="auth failed" client_secret=AbC123RealClientSecret',
+    "  client-secret: RealAzureAppSecretValue",
 ]
 
 SELF_TEST_KEPT = [
@@ -337,6 +354,7 @@ SELF_TEST_KEPT = [
     "  existingSecret: nexus-azure-storage",
     "  secretKey: azure-storage-access-key",
     "  clusterSecretStore: azure-keyvault",
+    "  clientSecretEnv: NEXUS_CLIENT_SECRET",
     "image: reg.example.com/nexus_api@sha256:"
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "  gitCommit: 1ad6e68c4d5c2b8f3a9e7d6c5b4a39281f0e7d6c",
@@ -419,6 +437,37 @@ JSON_DOCUMENT = """{
 }
 """
 
+# Proves the annotation is dropped whole (block and inline) while the real spec below
+# it still redacts as usual.
+LAST_APPLIED_BLOCK_YAML = """apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexus-api
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"env":[{"name":"JWT_SECRET","value":"annotation-plain-jwt"}]}
+spec:
+  template:
+    spec:
+      containers:
+      - name: api
+        env:
+        - name: JWT_SECRET
+          value: spec-plain-jwt
+"""
+
+LAST_APPLIED_INLINE_YAML = (
+    "apiVersion: v1\n"
+    "kind: ConfigMap\n"
+    "metadata:\n"
+    "  name: c\n"
+    "  annotations:\n"
+    "    kubectl.kubernetes.io/last-applied-configuration: "
+    '\'{"data":{"note":"annotation-plain-value"}}\'\n'
+    "data:\n"
+    "  note: hello\n"
+)
+
 
 def _check(failures, condition, message):
     if not condition:
@@ -453,6 +502,17 @@ def self_test():
     _check(failures, "pcsk_live_value" not in env, "literal env secret was not redacted")
     _check(failures, counts.get("env-literal") == 1, "env literal was not counted")
     _check(failures, '"9000"' in env, "non-sensitive env value was redacted")
+
+    counts = {}
+    block_applied = redact_text(LAST_APPLIED_BLOCK_YAML, counts)
+    _check(failures, "annotation-plain-jwt" not in block_applied, "last-applied block survived")
+    _check(failures, "spec-plain-jwt" not in block_applied, "spec env value survived")
+    _check(failures, counts.get("opaque-dump") == 1, "last-applied annotation not counted")
+    _check(failures, counts.get("env-literal") == 1, "spec env literal was not redacted")
+
+    inline_applied = redact_text(LAST_APPLIED_INLINE_YAML, {})
+    _check(failures, "annotation-plain-value" not in inline_applied, "inline last-applied survived")
+    _check(failures, "note: hello" in inline_applied, "data outside the annotation was redacted")
 
     counts = {}
     scalars = redact_text(BLOCK_SCALAR_YAML, counts)
