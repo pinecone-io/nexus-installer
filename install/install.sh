@@ -5,8 +5,9 @@
 #   fallback for a non-default dimension/index id) with the generated overlays and
 #   --set for the generated JWT + session credentials and the model provider keys.
 #
-# --dry-run runs preflight + `helm template` and prints the full plan WITHOUT
-# touching a cluster or creating any secret.
+# --dry-run runs preflight + lint + render and prints the full plan, creating no
+# secrets. =client (default) is offline (helm template); =server validates the
+# manifest against the cluster API (catches server-side rejections; needs kube access).
 #
 # Re-runnable: the two generated release credentials are persisted (0600) to
 # install/.secrets.env on first run and reused, so re-installs keep stable creds.
@@ -14,28 +15,37 @@
 # re-run (see README). Never `helm upgrade` it.
 #
 # Usage:
-#   ./install.sh [--dry-run] [--path auto|oci|local] [--chart-path DIR]
-#                [-f customer.yaml] [--yes]
+#   ./install.sh [--dry-run[=client|server]] [--path auto|oci|local] [--chart-path DIR]
+#                [-f customer.yaml] [--yes] [--debug]
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 DRY_RUN=0
+DRY_RUN_MODE="client"   # client = offline helm template; server = validate against the cluster API
 PATH_OVERRIDE="auto"
 CHART_PATH=""
 ASSUME_YES=0
+DEBUG=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
+    --dry-run=*) DRY_RUN=1; DRY_RUN_MODE="${1#*=}" ;;
     --path) PATH_OVERRIDE="$2"; shift ;;
     --chart-path) CHART_PATH="$2"; shift ;;
     -f|--inputs) INPUTS_FILE="$2"; shift ;;
     --yes|-y) ASSUME_YES=1 ;;
+    --debug) DEBUG=1 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
   shift
 done
+case "$DRY_RUN_MODE" in client|server) ;; *) die "--dry-run mode must be 'client' or 'server', got '$DRY_RUN_MODE'" ;; esac
+
+# Pass --debug through to helm only when asked (helm --debug is a firehose).
+DEBUG_ARGS=()
+[ "$DEBUG" = 1 ] && DEBUG_ARGS=(--debug)
 
 need helm
 need python3
@@ -95,8 +105,8 @@ load_or_make_creds() {
 }
 
 # --- 4. build the --set list -------------------------------------------------
-# Under dry-run we never read real secrets or touch a cluster: use placeholders so
-# `helm template` renders. Otherwise resolve creds + provider keys by reference.
+# Under dry-run we use placeholder release creds + provider keys (no real secret is
+# read). Otherwise resolve creds + provider keys by reference.
 build_set_args() {
   local -n out=$1
   if [ "$DRY_RUN" = 1 ]; then
@@ -126,12 +136,38 @@ build_set_args() {
 SET_ARGS=()
 build_set_args SET_ARGS
 
-# --- 5a. dry-run: template only ----------------------------------------------
+# --- 5a. dry-run: lint + render (client=template, server=API validation) -----
 if [ "$DRY_RUN" = 1 ]; then
-  log "DRY RUN — rendering the chart; no cluster access, no secrets created."
+  log "DRY RUN ($DRY_RUN_MODE) — lint + render; no secrets created. client is offline; server validates against the cluster API."
+
+  # helm lint wants a chart path, not an oci:// ref, so pull the OCI chart to a temp dir.
+  log "helm lint"
+  if [ "$RESOLVED_PATH" = "oci" ]; then
+    LINT_DIR="$(mktemp -d)"
+    if helm pull "$CHART_REF" "${VERSION_ARGS[@]}" --untar --untardir "$LINT_DIR" 2>/dev/null; then
+      helm lint "${DEBUG_ARGS[@]}" "$LINT_DIR/nexus-installer" "${OVERLAYS[@]}" "${SET_ARGS[@]}" >&2 || warn "helm lint reported issues (above)"
+    else
+      warn "could not pull the chart to lint (need 'helm registry login $REGISTRY_SERVER'?); skipping lint"
+    fi
+    rm -rf "$LINT_DIR"
+  else
+    helm lint "${DEBUG_ARGS[@]}" "$CHART_REF" "${OVERLAYS[@]}" "${SET_ARGS[@]}" >&2 || warn "helm lint reported issues (above)"
+  fi
+
   RENDER="$GEN_DIR/render.yaml"
-  helm template "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
-    -n "$NAMESPACE" "${OVERLAYS[@]}" "${SET_ARGS[@]}" > "$RENDER"
+  if [ "$DRY_RUN_MODE" = "server" ]; then
+    need kubectl
+    log "server-side dry-run — validating the manifest against the cluster API ($KUBE_CONTEXT)"
+    # The API server can only validate namespaced objects against an existing namespace, so
+    # ensure the target namespace exists. A --dry-run=server install persists nothing else.
+    kubectl --context "$KUBE_CONTEXT" create namespace "$NAMESPACE" --dry-run=client -o yaml \
+      | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null
+    helm --kube-context "$KUBE_CONTEXT" install "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
+      -n "$NAMESPACE" "${OVERLAYS[@]}" "${SET_ARGS[@]}" --dry-run=server > "$RENDER"
+  else
+    helm template "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
+      -n "$NAMESPACE" "${OVERLAYS[@]}" "${SET_ARGS[@]}" > "$RENDER"
+  fi
   log "rendered -> $RENDER ($(grep -c '^kind:' "$RENDER") objects)"
   log "images referenced (each must be on your registry base '$REGISTRY_BASE'):"
   grep -E '^\s*image:' "$RENDER" | sed 's/^/    /' | sort -u >&2
@@ -160,7 +196,7 @@ log "creating secrets"
 "$HERE/create-secrets.sh"
 
 log "helm install (patient foreground; do NOT Ctrl-C while it waits on the verify hook)"
-helm --kube-context "$KUBE_CONTEXT" install "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
+helm --kube-context "$KUBE_CONTEXT" install "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
   -n "$NAMESPACE" "${OVERLAYS[@]}" "${SET_ARGS[@]}" --timeout 10m
 
 log "install submitted. Verify: kubectl --context $KUBE_CONTEXT -n $NAMESPACE get pods"
