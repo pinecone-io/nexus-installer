@@ -13,6 +13,8 @@ STATIC checks (default, values-only, no cloud access):
     defined catalog entry.
   - image registry override set; pull-secret server is a prefix of the registry base.
   - workload_identity: clientId set. shared_key: existingSecret set.
+  - no leftover example/placeholder values (an `acme` token, an unfilled <...>, or a
+    [YOURS] field still equal to customer.example.yaml).
 
 LIVE checks (--live, opt-in, shells out to az/kubectl):
   - kube context reachable.
@@ -396,6 +398,83 @@ def check_storage_auth(inp):
             warn("storage.storageKeyEnv is empty — create-secrets.sh needs it to build the key Secret")
 
 
+# Fields the customer must fill with a value only they have; leftover example text
+# here is exactly what slipped through on a real install and failed at curation. Rule 3
+# (equals-example) is scoped to these [YOURS] fields so [DEFAULT]/[PINECONE] values that
+# are meant to be kept as-is (staticIndex.id == bakedIndexId, sourceRegistry, host.name)
+# never false-positive.
+PLACEHOLDER_EXAMPLE_FIELDS = [
+    "kubeContext",
+    "registry.base",
+    "registry.server",
+    "registry.username",
+    "storage.account",
+    "storage.containerPrefix",
+    "inference.endpoint",
+    "inference.rerankEndpoint",
+]
+
+
+def _iter_strings(node, prefix=""):
+    """Yield (dotted_path, value) for every string leaf, skipping the *Env fields — those
+    hold env-var NAMES for secrets, and preflight must never treat a secret's name (or
+    value) as config to scan."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(k, str) and k.endswith("Env"):
+                continue
+            yield from _iter_strings(v, f"{prefix}.{k}" if prefix else k)
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from _iter_strings(v, f"{prefix}[{i}]")
+    elif isinstance(node, str):
+        yield prefix, node
+
+
+def _load_example():
+    try:
+        with open(os.path.join(HERE, "customer.example.yaml")) as f:
+            return yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+
+
+def check_placeholders(inp):
+    section("Leftover example / placeholder values")
+    # field -> (value, reason); one FAIL per field even if several rules match.
+    offenders = {}
+
+    for path, val in _iter_strings(inp):
+        # Empty means not-yet-set-but-optional (e.g. ingress.host, host.url), not leftover.
+        if not val.strip():
+            continue
+        if "acme" in val.lower():
+            offenders.setdefault(path, (val, "contains the example org/stem 'acme'"))
+        elif re.search(r"<[^>]+>", val):
+            offenders.setdefault(path, (val, "has an unfilled <...> placeholder"))
+
+    example = _load_example()
+    if example is None:
+        warn("could not read customer.example.yaml — skipping the equals-example comparison")
+    else:
+        for path in PLACEHOLDER_EXAMPLE_FIELDS:
+            if path in offenders:
+                continue
+            val = get(inp, path)
+            if isinstance(val, str) and val.strip() and val == get(example, path):
+                offenders.setdefault(path, (val, "is unchanged from customer.example.yaml"))
+
+    if offenders:
+        for path in sorted(offenders):
+            val, reason = offenders[path]
+            fail(
+                f"{path}={val!r} {reason} — looks like this value is still the example "
+                "placeholder; edit customer.yaml before installing."
+            )
+    else:
+        ok("no leftover example/placeholder values")
+
+
 # ----------------------------------------------------------------------------- live
 def check_live(inp):
     section("LIVE: kube context")
@@ -559,6 +638,7 @@ def main():
     check_inference(inp)
     check_registry(inp)
     check_storage_auth(inp)
+    check_placeholders(inp)
     if args.live:
         check_live(inp)
 
