@@ -41,14 +41,10 @@ Before running anything:
 - **A cluster.** Kubernetes 1.35, ≥ 2 amd64 nodes, a default StorageClass, and node
   egress to your registry, storage account, and model endpoints. Greenfield? The
   optional `terraform/aks-slim` module in this repo stands up a conforming AKS cluster.
-- **A registry.** The image bundle + the OCI chart available under one base path in
-  your ACR/Artifactory, plus a pull credential — staged by your own pipeline (an
-  active copy) or served by a pull-through remote fronting the single repo the bundle
-  publishes from (one remote resolves the whole bundle). `image-manifest.sh --list`
-  prints exactly what must be present. Two logins are involved and are separate: the
-  in-cluster **pull Secret** (`create-secrets.sh`, from `registry.passwordEnv`) lets the
-  nodes pull the *images*, while **`helm` itself** must be logged in to this registry
-  (`helm registry login <registry.server>`) so it can pull the *OCI chart* at install.
+- **The bundle in your registry.** Pinecone stages the images + OCI chart under one base
+  path (`registry.base`) in your ACR/Artifactory. Log in once (`helm registry login
+  <registry.server>`) so `helm` can pull the chart; `create-secrets.sh` makes the pull
+  Secret (`registry.passwordEnv`) so nodes pull the images.
 - **Azure Blob storage.** One StorageV2 account and its **seven containers** (the stack
   does not create them). The optional `terraform/aks-slim` module provisions them for
   you; otherwise create them before install. Names derive from your stem: `<stem>-db`
@@ -83,22 +79,17 @@ export NEXUS_RERANK_KEY=...                # inference.rerankKeyEnv
 python3 gen-values.py
 python3 preflight.py                       # static invariants; fix any FAIL before continuing
 
-# 2. List the exact images + chart the install pulls, and make sure they are present in
-#    your registry — staged by your own pipeline (an active copy) or served by a
-#    pull-through remote. This copies nothing. The chart bakes the exact image tags (the
-#    nexus tag can differ from bundle.tag), so pull the chart from the source Pinecone
-#    granted you and render against it — otherwise the tags are only approximate:
-helm registry login <bundle.sourceRegistry host>              # e.g. us-docker.pkg.dev
-helm pull oci://<bundle.sourceRegistry>/nexus-installer \
-     --version 0.0.0-bundle.<bundle.tag> --untar              # -> ./nexus-installer
+# 2. Log in to your registry (it holds the bundle) and pull the chart, so image-manifest
+#    can render the exact image list the install pulls (the chart bakes the tags):
+helm registry login <registry.server>                        # your ACR/Artifactory
+helm pull oci://<registry.base>/nexus-installer --version 0.0.0-bundle.<bundle.tag> --untar
 ./image-manifest.sh --list --chart-path ./nexus-installer
 
 # 3. Optional live checks (containers, image presence, identity in the cloud):
 python3 preflight.py --live
 
-# 4. Log in to YOUR registry so helm can pull the OCI chart at install, then dry-run the
-#    whole plan (touches nothing) and install for real:
-helm registry login <registry.server>                        # the ACR/Artifactory you install FROM
+# 4. Dry-run the whole plan (touches nothing), then install (helm pulls the chart from
+#    your registry, using the login from step 2):
 ./install.sh --dry-run
 ./install.sh                               # non-interactive / CI: add --yes to skip the confirm prompt
 ```
@@ -106,25 +97,6 @@ helm registry login <registry.server>                        # the ACR/Artifacto
 `install.sh` regenerates the overlays and re-runs the static preflight itself, so
 steps 1–3 are optional before step 4 — they're there so you can inspect the artifacts
 and confirm your registry first.
-
-> **Variant — install straight from Pinecone's registry (granted access).** If Pinecone
-> granted your cluster pull access to the bundle repo, you can skip the mirror entirely:
-> point `registry.base` **and** `registry.server` at that one repo and install directly —
-> the single-repo bundle resolves without any staging.
->
-> ```yaml
-> registry:
->   base: us-docker.pkg.dev/pinecone-artifacts/nexus   # = bundle.sourceRegistry
->   server: us-docker.pkg.dev
->   username: _json_key                                # service-account key auth
->   passwordEnv: NEXUS_REGISTRY_PASSWORD               # holds the SA key JSON
-> ```
->
-> Use a **service-account key**, not a short-lived `gcloud` token: nodes re-pull on
-> reschedule, so the pull Secret must outlive an hour. `helm registry login
-> us-docker.pkg.dev` before install. `preflight.py --live` can't pre-verify image
-> presence on a non-ACR registry (it WARNs; images resolve on first pull); the rest of
-> preflight is unchanged.
 
 ## Verify the install
 
