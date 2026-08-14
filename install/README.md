@@ -79,11 +79,12 @@ export NEXUS_RERANK_KEY=...                # inference.rerankKeyEnv
 python3 gen-values.py
 python3 preflight.py                       # static invariants; fix any FAIL before continuing
 
-# 2. Log in to your registry (it holds the bundle) and pull the chart, so image-manifest
-#    can render the exact image list the install pulls (the chart bakes the tags):
-helm registry login <registry.server>                        # your ACR/Artifactory
-helm pull oci://<registry.base>/nexus-installer --version 0.0.0-bundle.<bundle.tag> --untar
-./image-manifest.sh --list --chart-path ./nexus-installer
+# 2. List the exact images + chart the install pulls. image-manifest derives the list
+#    from the chart render (the chart bakes the tags), so it pulls the OCI chart itself —
+#    log in to the source registry first. Pass --chart-path <dir> to render a local
+#    checkout instead of pulling:
+helm registry login <bundle.sourceRegistry host>            # the source you mirror FROM
+./image-manifest.sh --list
 
 # 3. Optional live checks (containers, image presence, identity in the cloud):
 python3 preflight.py --live
