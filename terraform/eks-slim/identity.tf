@@ -72,9 +72,8 @@ resource "aws_iam_openid_connect_provider" "this" {
 }
 
 # ---- EBS CSI driver IRSA role ---------------------------------------------
-# The controller reaches EC2 to create/attach volumes. Managed nodes default to an IMDS
-# hop limit of 1, which blocks the controller pod from reading node credentials via IMDS,
-# so it gets its own IRSA role instead of leaning on the node instance profile.
+# The managed-node IMDS hop limit of 1 blocks pods from reading node credentials, so the
+# CSI controller federates its own role rather than using the node instance profile.
 
 locals {
   oidc_host = replace(aws_eks_cluster.this.identity[0].oidc[0].issuer, "https://", "")

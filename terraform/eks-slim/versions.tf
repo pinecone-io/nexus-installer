@@ -1,4 +1,3 @@
-# Terraform + provider version pins for the eks-slim EKS package.
 terraform {
   required_version = ">= 1.5.0"
 

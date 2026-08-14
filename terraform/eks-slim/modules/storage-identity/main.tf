@@ -61,8 +61,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "nexus" {
 }
 
 # ---- IRSA role -----------------------------------------------------------
-# One role trusted by every Nexus blob-accessing service account. The chart annotates each
-# SA with this role's ARN (eks.amazonaws.com/role-arn).
+# A single role trusted by every blob-accessing service account (see locals.tf for the set).
 
 data "aws_iam_policy_document" "assume_role" {
   statement {

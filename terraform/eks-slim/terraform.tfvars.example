@@ -14,9 +14,8 @@ kubernetes_version = "1.31"
 node_count         = 2
 node_instance_type = "m6i.2xlarge"
 
-# Networking: unlike Azure CNI Overlay (a /27 suffices), the AWS VPC CNI assigns pod IPs
-# from the node subnet, so private subnets are /20 per AZ across >= 2 AZs. Prefix
-# delegation raises pods-per-node further.
+# Networking: the VPC CNI assigns pod IPs from the node subnet, so private subnets are /20
+# per AZ across >= 2 AZs. Prefix delegation raises pods-per-node further.
 vpc_cidr                 = "10.224.0.0/16"
 az_count                 = 2
 enable_prefix_delegation = true

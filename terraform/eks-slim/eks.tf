@@ -93,8 +93,7 @@ resource "aws_eks_addon" "coredns" {
   depends_on = [aws_eks_node_group.this]
 }
 
-# EBS CSI driver — dynamic block storage for stateful workloads (FoundationDB, etc.).
-# The controller assumes its own IRSA role (identity.tf) for EC2 access.
+# The controller assumes its own IRSA role (identity.tf), not the node instance profile.
 resource "aws_eks_addon" "ebs_csi" {
   cluster_name                = aws_eks_cluster.this.name
   addon_name                  = "aws-ebs-csi-driver"

@@ -4,8 +4,7 @@ locals {
   cluster_name = coalesce(var.cluster_name, "eks-${local.base}")
   blob_prefix  = coalesce(var.blob_prefix, local.base)
 
-  # Baseline tags always apply; the installer's var.tags are merged on top (and may
-  # override a baseline key if they choose to). Applied cluster-wide via provider default_tags.
+  # Baseline tags always apply; var.tags merge on top. Applied cluster-wide via default_tags.
   tags = merge({
     config       = "slim"
     "managed-by" = "terraform"

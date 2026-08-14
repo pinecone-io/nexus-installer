@@ -10,9 +10,9 @@ of hiding.
 skips this — it is not a dependency of the chart. It is the executable form of the self-hosted
 prerequisites.
 
-**Terraform only.** This module is decoupled from the install scripts and the chart. Consuming its
-outputs from `install/` (an S3 branch in `gen-values.py`, etc.) is a separate task — see
-[object storage](#object-storage--bucket-per-store-read-this) below.
+**Optional and decoupled.** This module is not a dependency of the chart or the install scripts;
+`install/tf-to-inputs.sh` reads its outputs into `customer.yaml` when you use it. See
+[object storage](#object-storage--bucket-per-store) for the layout it provisions.
 
 ## Naming
 
@@ -32,7 +32,7 @@ Individual names can still be overridden (`cluster_name`, `bucket_name`, ...).
   bootstrapped as cluster-admin.
 - A **default `gp3` StorageClass** backed by the EBS CSI driver. EKS ships no working default
   class (the legacy in-tree `gp2` provisioner is gone in current Kubernetes), so without this
-  stateful pods stay `Pending` on unbound PVCs; AKS provides one out of the box and this matches it.
+  stateful pods stay `Pending` on unbound PVCs.
 - Cluster and node IAM roles, the **IAM OIDC provider** registered from the cluster's issuer (the
   trust anchor IRSA needs), and an IRSA role for the EBS CSI controller (managed nodes' IMDS hop
   limit of 1 blocks the controller from borrowing node credentials, so it gets its own).
@@ -49,38 +49,31 @@ Individual names can still be overridden (`cluster_name`, `bucket_name`, ...).
 The AWS VPC CNI assigns every pod a routable IP out of the node subnet, so the subnet must hold
 every pod, not just every node. A small subnet exhausts as soon as pod density climbs.
 
-A full Nexus cell across 3 AZs fits inside a `/20` VPC carved into `/22` private subnets (~1019 IPs
-each), peaking at ~350 pods / ~960 consumed IPs per AZ with roughly 2× headroom still free — so a
-`/20` VPC is the floor for a real cell, and the cell wizard's CIDR validator rejects anything
-smaller ("too few pod IPs for the EKS VPC CNI"). This module is more generous: a `/16` VPC with a
-**`/20` private subnet per AZ** (4094 IPs), which clears that floor and leaves room to raise
-`az_count` or run multiple instances. `enable_prefix_delegation` (on by default) hands each ENI a
-`/28` prefix instead of single secondary IPs, lifting pods-per-node further.
+A full workload across 3 AZs was measured to fit inside a `/20` VPC carved into `/22` private
+subnets (~1019 IPs each), peaking at ~350 pods / ~960 consumed IPs per AZ — so a `/20` VPC is about
+the floor for real pod density. This module is more generous: a `/16` VPC with a **`/20` private
+subnet per AZ** (4094 IPs), which clears that floor and leaves room to raise `az_count` or run
+multiple instances. `enable_prefix_delegation` (on by default) hands each ENI a `/28` prefix
+instead of single secondary IPs, lifting pods-per-node further.
 
-## Object storage — bucket-per-store (read this)
+## Object storage — bucket-per-store
 
-This mirrors the Azure layout one-for-one: **one DB bucket + six nexus buckets** (seven total),
-the S3 equivalent of the seven Azure containers-from-one-stem. Pinecone's blob layer maps each
-logical store to a whole bucket (there is no bucket+prefix mode), so bucket-per-store is the
-faithful translation — the DB shares one bucket across its seven logical stores (their keys are
-disjoint), and each nexus store gets its own.
+pc-blob maps each logical store to a whole bucket — there is no bucket+prefix mode — so the layout
+is **one DB bucket + six nexus buckets** (seven total): the DB shares one bucket across its seven
+logical stores (their keys are disjoint), and each nexus store gets its own.
 
-Two facts about how the chart consumes this, confirmed against the chart templates:
+How the chart consumes these:
 
 - pc-blob selects its driver from **`nexus.config.cloud.provider = "aws"`** (plus `cloud.region`).
-  Credentials are **IRSA only** — the chart annotates each service account with
-  `eks.amazonaws.com/role-arn` (via the pass-through `serviceAccountAnnotations` value); the AWS
-  SDK default credential chain picks up the web-identity token. There is **no** account/key/
-  `clientId`/`roleArn` field inside the storage values.
-- The nexus half already takes explicit per-store bucket names (`config.storage.{source,knowledge,
-  archive,traces,snapshots,library}`) and emits them driver-neutrally, so it needs no chart change.
-  The DB half's blob-env template is Azure-only (`abs-blob-env.gotmpl`); an AWS slim install needs
-  the S3 sibling that points its seven stores at `db_bucket`. **The installer itself emits Azure
-  Blob values today** (`install/gen-values.py` has no S3 branch yet) — wiring these outputs in is
-  the separate later task.
+  Credentials are **IRSA only** — each service account is annotated with
+  `eks.amazonaws.com/role-arn` (via the pass-through `serviceAccountAnnotations` value) and the AWS
+  SDK default credential chain picks up the web-identity token; no account or key field appears in
+  the storage values.
+- The nexus half takes explicit per-store bucket names (`config.storage.{source,knowledge,archive,
+  traces,snapshots,library}`); the DB half points its seven stores at the single DB bucket.
 
-The module outputs what that path needs: the **DB bucket**, the **six nexus buckets** (by store),
-and the **IRSA role ARN**.
+`install/gen-values.py` renders these into `values.s3.yaml` from `customer.yaml`. This module
+outputs the **DB bucket**, the **six nexus buckets** (by store), and the **IRSA role ARN**.
 
 ## Prerequisites
 
@@ -116,10 +109,10 @@ policy — the controller Helm install itself is a separate step).
 
 ## Wiring into the chart
 
-After apply, feed the outputs into the chart. Because the slim S3 overlay is not implemented in the
-installer yet (above), the mapping below is the intended target, not a wired contract:
+`install/tf-to-inputs.sh` fills the storage inputs from these outputs and `gen-values.py` renders
+them into `values.s3.yaml`. The mapping:
 
-| Output | Chart value (intended) |
+| Output | Chart value |
 |---|---|
 | `db_bucket` | db-slim `PINECONE_BLOB_STORE__*_BUCKET_NAME` (all seven DB stores point here) |
 | `nexus_buckets` | `config.storage.{source,knowledge,archive,traces,snapshots,library}` |

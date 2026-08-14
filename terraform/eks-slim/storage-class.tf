@@ -1,7 +1,6 @@
-# A default StorageClass so PersistentVolumeClaims that name no class (the common case,
-# e.g. FoundationDB's volumeClaimTemplate) get an EBS gp3 volume. EKS ships no default
-# class — the legacy in-tree gp2 is gone in current Kubernetes — so without this, stateful
-# pods stay Pending on unbound PVCs. AKS provides one out of the box; this matches that.
+# A default StorageClass so PVCs that name no class (e.g. FoundationDB's volumeClaimTemplate)
+# get an EBS gp3 volume. EKS ships no working default class (the in-tree gp2 provisioner is
+# gone in current Kubernetes), so without this stateful pods stay Pending on unbound PVCs.
 
 data "aws_eks_cluster_auth" "this" {
   name = aws_eks_cluster.this.name
