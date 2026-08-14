@@ -63,10 +63,12 @@ staticIndex:
   name: nexus-hybrid                          # [DEFAULT]  -> staticIndex.name
   # dimension is taken from embedding.dimension below (one source of truth).
 
-# --- Blob storage (Azure) ----------------------------------------------------
-# You pre-create the account and the seven containers (see README).
-# `containerPrefix` is the stem the seven names derive from.
+# --- Object storage ----------------------------------------------------------
+# provider: abs (Azure Blob, below) or s3 (AWS, further down). You pre-create the
+# storage; tf-to-inputs.sh fills this block from the aks-slim / eks-slim outputs.
 storage:
+  provider: abs                          # [YOURS]   abs | s3
+  # --- provider: abs (Azure Blob) — seven containers from one stem (see README) ---
   account: acmenexusstore                # [YOURS]   -> blob.abs.account
   containerPrefix: acme                  # [YOURS]   -> blob.abs.containerPrefix; 7 containers:
                                          #            <stem>-db + <stem>-nexus-{source,knowledge,archive,traces,snapshots,library}
@@ -76,6 +78,18 @@ storage:
   storageKeyEnv: NEXUS_STORAGE_KEY       # [DEFAULT] env var name holding the storage account key
   # --- workload_identity only ---
   clientId: ""                           # [YOURS]   user-assigned managed identity client id -> blob.abs.clientId
+  # --- provider: s3 (AWS) — bucket-per-store, keyless IRSA (delete the abs keys above) ---
+  # provider: s3
+  # dbBucket: acme-abc123-db             # [YOURS]  the one bucket every DB store shares -> blob.s3.dbBucket
+  # region: us-east-1                    # [YOURS]  bucket region -> blob.s3.region (the AWS SDK has no default)
+  # roleArn: arn:aws:iam::<acct>:role/<role>   # [YOURS] IRSA role every blob-accessing SA assumes
+  # buckets:                             # [YOURS]  the six nexus stores, one bucket each
+  #   source: acme-abc123-nexus-source
+  #   knowledge: acme-abc123-nexus-knowledge
+  #   archive: acme-abc123-nexus-archive
+  #   traces: acme-abc123-nexus-traces
+  #   snapshots: acme-abc123-nexus-snapshots
+  #   library: acme-abc123-nexus-library
 
 # --- Model endpoints (OpenAI-compatible: Azure OpenAI + Azure AI Foundry) -----
 # You create the chat/embedding/rerank deployments, but their NAMES must be ones

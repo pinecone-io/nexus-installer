@@ -76,7 +76,7 @@ fi
 
 OVERLAYS=(
   -f "$GEN_DIR/values.install.yaml"
-  -f "$GEN_DIR/values.abs.yaml"
+  -f "$GEN_DIR/$STORAGE_VALUES"
   -f "$GEN_DIR/values.self-hosted.yaml"
 )
 
@@ -178,7 +178,7 @@ if [ "$DRY_RUN" = 1 ]; then
     release   : $RELEASE
     path      : $RESOLVED_PATH
     chart     : $CHART_REF ${VERSION_ARGS[*]:-}
-    overlays  : values.install.yaml, values.abs.yaml, values.self-hosted.yaml
+    overlays  : values.install.yaml, $STORAGE_VALUES, values.self-hosted.yaml
     secrets   : (real run) pull=$PULL_SECRET_NAME, storage=$STORAGE_EXISTING_SECRET, + provider keys via --set
 EOF
   log "dry-run complete."

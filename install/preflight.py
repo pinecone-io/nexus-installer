@@ -54,6 +54,10 @@ CONTAINER_SUFFIXES = [
     "nexus-library",
 ]
 
+# On s3 the six nexus stores are their own buckets (bucket-per-store); the DB shares a
+# seventh (storage.dbBucket).
+NEXUS_BUCKET_STORES = ["source", "knowledge", "archive", "traces", "snapshots", "library"]
+
 # Nexus images the chart deploys + the DB set + FoundationDB. Used by the
 # live image-presence check; image-manifest.sh derives the authoritative list from the render.
 NEXUS_IMAGES = [
@@ -124,6 +128,10 @@ def get(d, path, default=None):
             return default
         cur = cur[part]
     return cur
+
+
+def storage_provider(inp):
+    return get(inp, "storage.provider", "abs")
 
 
 def run(cmd):
@@ -398,6 +406,39 @@ def check_storage_auth(inp):
             warn("storage.storageKeyEnv is empty — create-secrets.sh needs it to build the key Secret")
 
 
+def check_buckets_s3(inp):
+    section("S3 buckets")
+    db = get(inp, "storage.dbBucket")
+    if not db:
+        fail("storage.dbBucket is empty (blob.s3.dbBucket is required for s3)")
+    if not get(inp, "storage.region"):
+        fail("storage.region is empty (blob.s3.region is required — the AWS SDK has no default)")
+
+    buckets = get(inp, "storage.buckets") or {}
+    missing = [s for s in NEXUS_BUCKET_STORES if not buckets.get(s)]
+    if missing:
+        fail(f"storage.buckets missing nexus store(s): {missing} — each nexus store is its own bucket")
+    elif db:
+        ok(f"7 buckets: {db} (db) + {', '.join(buckets[s] for s in NEXUS_BUCKET_STORES)}")
+
+    # Drift vs the emitted overlay, mirroring the abs container check.
+    gs = load_gen("values.s3.yaml")
+    gen_db = get(gs, "blob.s3.dbBucket") if gs else None
+    if gen_db is not None and db and gen_db != db:
+        fail(f"dbBucket drift: input '{db}' != generated blob.s3.dbBucket '{gen_db}'")
+
+
+def check_storage_irsa(inp):
+    section("S3 / IRSA")
+    role = get(inp, "storage.roleArn", "")
+    if not role:
+        fail("storage.roleArn is empty (the IRSA role each blob-accessing SA assumes)")
+    elif role.startswith("arn:aws:iam::") and ":role/" in role:
+        ok(f"roleArn is an IAM role ARN ({role})")
+    else:
+        fail(f"storage.roleArn does not look like an IAM role ARN: {role!r}")
+
+
 # Fields the customer must fill with a value only they have; leftover example text
 # here is exactly what slipped through on a real install and failed at curation. Rule 3
 # (equals-example) is scoped to these [YOURS] fields so [DEFAULT]/[PINECONE] values that
@@ -485,30 +526,10 @@ def check_live(inp):
     else:
         ok(f"kube context '{ctx}' reachable")
 
-    sub = get(inp, "azure.subscription")
-    rg = get(inp, "azure.resourceGroup")
-    acct = get(inp, "storage.account")
-    prefix = get(inp, "storage.containerPrefix")
-
-    section("LIVE: blob containers")
-    if not (sub and rg and acct):
-        warn("azure.subscription / azure.resourceGroup / storage.account incomplete — skipping")
+    if storage_provider(inp) == "s3":
+        _live_s3_buckets(inp)
     else:
-        rc, out = run([
-            "az", "storage", "container-rm", "list", "--storage-account", acct,
-            "-g", rg, "--subscription", sub, "--query", "[].name", "-o", "json",
-        ])
-        if rc != 0:
-            warn(f"could not list containers: {out.splitlines()[0] if out else 'az error'}")
-        else:
-            try:
-                present = set(json.loads(out))
-            except json.JSONDecodeError:
-                present = set()
-            for name in (f"{prefix}-{s}" for s in CONTAINER_SUFFIXES):
-                (ok if name in present else fail)(
-                    f"container {name} {'present' if name in present else 'MISSING'}"
-                )
+        _live_abs_containers(inp)
 
     section("LIVE: mirrored images")
     # tags come from the render (manifest.txt); the chart can bake a tag other than bundle.tag
@@ -537,12 +558,59 @@ def check_live(inp):
             repo, tag = body.rsplit(":", 1)
             _acr_tag_check(acr_name, sub, repo, tag)
 
-    section("LIVE: workload identity federated credentials")
-    auth = get(inp, "storage.auth", "shared_key")
-    if auth != "workload_identity":
-        ok("auth != workload_identity — no federated-credential coverage needed")
+    if storage_provider(inp) == "s3":
+        section("LIVE: IRSA")
+        warn("SA role-arn annotations become checkable only after the chart is installed; "
+             "re-run `preflight.py --live` against the running cluster to verify coverage.")
     else:
-        _check_federation(inp)
+        section("LIVE: workload identity federated credentials")
+        auth = get(inp, "storage.auth", "shared_key")
+        if auth != "workload_identity":
+            ok("auth != workload_identity — no federated-credential coverage needed")
+        else:
+            _check_federation(inp)
+
+
+def _live_abs_containers(inp):
+    sub = get(inp, "azure.subscription")
+    rg = get(inp, "azure.resourceGroup")
+    acct = get(inp, "storage.account")
+    prefix = get(inp, "storage.containerPrefix")
+
+    section("LIVE: blob containers")
+    if not (sub and rg and acct):
+        warn("azure.subscription / azure.resourceGroup / storage.account incomplete — skipping")
+        return
+    rc, out = run([
+        "az", "storage", "container-rm", "list", "--storage-account", acct,
+        "-g", rg, "--subscription", sub, "--query", "[].name", "-o", "json",
+    ])
+    if rc != 0:
+        warn(f"could not list containers: {out.splitlines()[0] if out else 'az error'}")
+        return
+    try:
+        present = set(json.loads(out))
+    except json.JSONDecodeError:
+        present = set()
+    for name in (f"{prefix}-{s}" for s in CONTAINER_SUFFIXES):
+        (ok if name in present else fail)(
+            f"container {name} {'present' if name in present else 'MISSING'}"
+        )
+
+
+def _live_s3_buckets(inp):
+    section("LIVE: S3 buckets")
+    db = get(inp, "storage.dbBucket")
+    buckets = get(inp, "storage.buckets") or {}
+    names = [n for n in [db] + [buckets.get(s) for s in NEXUS_BUCKET_STORES] if n]
+    if not names:
+        warn("no bucket names to check — skipping")
+        return
+    for name in names:
+        rc, out = run(["aws", "s3api", "head-bucket", "--bucket", name])
+        (ok if rc == 0 else fail)(
+            f"bucket {name} {'present' if rc == 0 else 'MISSING or not accessible'}"
+        )
 
 
 def _acr_tag_check(acr_name, sub, repository, tag):
@@ -634,10 +702,16 @@ def main():
     print(f"Preflight: {args.inputs}" + ("  (static + live)" if args.live else "  (static)"))
     check_dimension(inp)
     check_embedding_width(inp)
-    check_containers(inp)
+    if storage_provider(inp) == "s3":
+        check_buckets_s3(inp)
+    else:
+        check_containers(inp)
     check_inference(inp)
     check_registry(inp)
-    check_storage_auth(inp)
+    if storage_provider(inp) == "s3":
+        check_storage_irsa(inp)
+    else:
+        check_storage_auth(inp)
     check_placeholders(inp)
     if args.live:
         check_live(inp)

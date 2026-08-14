@@ -30,8 +30,8 @@ output "private_subnet_ids" {
 }
 
 output "get_credentials_command" {
-  description = "Fetch kubeconfig for this cluster."
-  value       = "aws eks update-kubeconfig --region ${var.region} --name ${aws_eks_cluster.this.name}"
+  description = "Fetch kubeconfig for this cluster. --alias names the context after the cluster so it matches the installer's kubeContext (default is the long cluster ARN)."
+  value       = "aws eks update-kubeconfig --region ${var.region} --name ${aws_eks_cluster.this.name} --alias ${aws_eks_cluster.this.name}"
 }
 
 # --- storage / IRSA (null when enable_storage_identity = false) ---
