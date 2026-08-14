@@ -135,23 +135,17 @@ variable "enable_prefix_delegation" {
 # into the chart's storage config.
 
 variable "enable_storage_identity" {
-  description = "Create the S3 bucket, the Nexus data-path prefixes, the IRSA role, and its S3 access policy."
+  description = "Create the seven Nexus data-path S3 buckets, the IRSA role, and its S3 access policy."
   type        = bool
   default     = true
 }
 
-variable "bucket_name" {
-  description = "Override the (globally unique) S3 bucket name. Null -> <name_prefix>-<environment>-<random>."
-  type        = string
-  default     = null
-}
-
 variable "blob_prefix" {
   description = <<-EOT
-    Stem the seven Nexus data-path key prefixes derive from: <stem>-db plus six
-    <stem>-nexus-* (source, knowledge, archive, traces, snapshots, library). The suffixes
-    are a fixed product contract, so the operator supplies only the stem. Feeds the chart's
-    blob.s3 container/prefix. Null -> <name_prefix>-<environment>.
+    Stem the seven bucket names derive from: <stem>-db plus six <stem>-nexus-* (source,
+    knowledge, archive, traces, snapshots, library). The suffixes are a fixed product
+    contract, so the operator supplies only the stem; a random suffix is appended for S3
+    global uniqueness. Null -> <name_prefix>-<environment>.
   EOT
   type        = string
   default     = null

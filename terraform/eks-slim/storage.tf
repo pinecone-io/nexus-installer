@@ -1,12 +1,11 @@
 # Optional storage + IRSA identity, kept as its own sub-module so a customer who brings
-# their own S3 bucket + IAM role can drop it entirely (enable_storage_identity = false)
-# and wire their own values into the chart's storage/IRSA config.
+# their own buckets + IAM role can drop it entirely (enable_storage_identity = false) and
+# wire their own values into the chart's storage/IRSA config.
 
 module "storage_identity" {
   source = "./modules/storage-identity"
   count  = var.enable_storage_identity ? 1 : 0
 
-  bucket_name = var.bucket_name
   blob_prefix = local.blob_prefix
 
   # Trust anchor: the cluster's IAM OIDC provider; the derived SA set (locals.tf) covers

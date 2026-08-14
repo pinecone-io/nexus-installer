@@ -1,20 +1,16 @@
-output "bucket_name" {
-  description = "S3 bucket holding the Nexus data path -> chart storage bucket value."
-  value       = aws_s3_bucket.nexus.bucket
+output "db_bucket" {
+  description = "The shared DB data-plane bucket -> chart db-slim PINECONE_BLOB_STORE__*_BUCKET_NAME (all seven DB stores)."
+  value       = aws_s3_bucket.nexus["db"].bucket
 }
 
-output "bucket_arn" {
-  value = aws_s3_bucket.nexus.arn
+output "nexus_buckets" {
+  description = "Map of nexus logical store -> bucket name -> chart config.storage.<store> / PINECONE_STORAGE__<STORE>."
+  value       = { for s in local.nexus_stores : s => aws_s3_bucket.nexus["nexus-${s}"].bucket }
 }
 
-output "blob_prefix" {
-  description = "Key-prefix stem the seven Nexus data-path prefixes derive from."
-  value       = var.blob_prefix
-}
-
-output "prefix_names" {
-  description = "The seven key prefixes provisioned from the stem (informational; the chart writes objects underneath)."
-  value       = local.prefix_names
+output "bucket_names" {
+  description = "All seven buckets (DB + six nexus), informational."
+  value       = [for b in aws_s3_bucket.nexus : b.bucket]
 }
 
 output "irsa_role_arn" {

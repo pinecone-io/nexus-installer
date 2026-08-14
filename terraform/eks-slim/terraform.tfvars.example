@@ -21,11 +21,11 @@ vpc_cidr                 = "10.224.0.0/16"
 az_count                 = 2
 enable_prefix_delegation = true
 
-# Storage + IRSA (set enable_storage_identity = false to bring your own bucket + role).
+# Storage + IRSA (set enable_storage_identity = false to bring your own buckets + role).
 enable_storage_identity = true
-# Stem the seven Nexus data-path key prefixes derive from: <stem>-db plus six <stem>-nexus-*
-# (source, knowledge, archive, traces, snapshots, library). Supply only the stem.
-# Null -> <name_prefix>-<environment>.
+# Stem the seven bucket names derive from: <stem>-db plus six <stem>-nexus-* (source,
+# knowledge, archive, traces, snapshots, library); a random suffix is appended for S3
+# global uniqueness. Supply only the stem. Null -> <name_prefix>-<environment>.
 blob_prefix = "acme"
 
 # IRSA trust is automatic — the module trusts every blob-accessing SA the chart runs.

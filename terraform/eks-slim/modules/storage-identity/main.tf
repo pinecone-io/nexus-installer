@@ -1,32 +1,25 @@
-# S3 bucket + the seven Nexus data-path key prefixes, plus the IRSA role the workload
-# service accounts assume for bucket access and its S3 policy.
-#
-# The umbrella chart consumes these via the bucket + prefix plus the IRSA role ARN
-# annotated onto each service account. Everything here is optional at the root (a customer
-# can bring their own bucket/role and skip this module).
-#
-# An S3 prefix is a key namespace that springs into being on first write, so the seven
-# need no per-prefix resource. The zero-byte markers below exist only so the layout is
-# visible (aws s3 ls) and the contract is asserted at apply time.
+# Bucket-per-store, because pc-blob maps each logical store to a whole bucket (there is no
+# bucket+prefix mode): the DB shares one bucket across its seven stores (their keys are
+# disjoint) and each nexus store gets its own. S3 has no account namespace, so every name
+# carries the random stem to stay globally unique.
 
 locals {
-  # All seven DB blob stores (DATA/DOCS/BACKUP/WAL/JANITOR/INTERNAL/GLACIER) share the
-  # single <stem>-db prefix — their keys never collide, so the DB needs one prefix, not seven.
-  container_suffixes = [
-    "db",
-    "nexus-source",
-    "nexus-knowledge",
-    "nexus-archive",
-    "nexus-traces",
-    "nexus-snapshots",
-    "nexus-library",
-  ]
-  prefix_names = [for s in local.container_suffixes : "${var.blob_prefix}-${s}"]
+  nexus_stores = ["source", "knowledge", "archive", "traces", "snapshots", "library"]
 
-  # Strip the scheme so the OIDC host can key the trust-policy conditions.
+  stem = "${var.blob_prefix}-${random_string.suffix.result}"
+
+  # Keyed by a static store id (known at plan time) so the bucket for_each is stable; the
+  # name itself embeds the random stem and is only known after apply, which is fine for a
+  # resource argument but would break a for_each key.
+  bucket_names = merge(
+    { "db" = "${local.stem}-db" },
+    { for s in local.nexus_stores : "nexus-${s}" => "${local.stem}-nexus-${s}" },
+  )
+
   oidc_host = replace(var.oidc_provider_url, "https://", "")
 }
 
+# One suffix shared by all seven names, so they group under a single stem.
 resource "random_string" "suffix" {
   length  = 6
   lower   = true
@@ -35,21 +28,22 @@ resource "random_string" "suffix" {
   special = false
 }
 
-# Bucket names are globally unique, 3-63 chars, lowercase. The random suffix avoids
-# collisions across environments/accounts.
 resource "aws_s3_bucket" "nexus" {
-  bucket = coalesce(var.bucket_name, "${var.blob_prefix}-${random_string.suffix.result}")
+  for_each = local.bucket_names
+  bucket   = each.value
 }
 
 resource "aws_s3_bucket_versioning" "nexus" {
-  bucket = aws_s3_bucket.nexus.id
+  for_each = aws_s3_bucket.nexus
+  bucket   = each.value.id
   versioning_configuration {
     status = "Enabled"
   }
 }
 
 resource "aws_s3_bucket_public_access_block" "nexus" {
-  bucket                  = aws_s3_bucket.nexus.id
+  for_each                = aws_s3_bucket.nexus
+  bucket                  = each.value.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -57,19 +51,13 @@ resource "aws_s3_bucket_public_access_block" "nexus" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "nexus" {
-  bucket = aws_s3_bucket.nexus.id
+  for_each = aws_s3_bucket.nexus
+  bucket   = each.value.id
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
     }
   }
-}
-
-resource "aws_s3_object" "prefix_marker" {
-  for_each = toset(local.prefix_names)
-  bucket   = aws_s3_bucket.nexus.id
-  key      = "${each.value}/"
-  content  = ""
 }
 
 # ---- IRSA role -----------------------------------------------------------
@@ -106,15 +94,13 @@ resource "aws_iam_role" "nexus_workload" {
 }
 
 data "aws_iam_policy_document" "s3_access" {
-  # Bucket-level: list + locate.
   statement {
     actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
-    resources = [aws_s3_bucket.nexus.arn]
+    resources = [for b in aws_s3_bucket.nexus : b.arn]
   }
-  # Object-level: full read/write within the bucket.
   statement {
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListMultipartUploadParts", "s3:AbortMultipartUpload"]
-    resources = ["${aws_s3_bucket.nexus.arn}/*"]
+    resources = [for b in aws_s3_bucket.nexus : "${b.arn}/*"]
   }
 }
 

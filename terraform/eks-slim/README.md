@@ -12,7 +12,7 @@ prerequisites.
 
 **Terraform only.** This module is decoupled from the install scripts and the chart. Consuming its
 outputs from `install/` (an S3 branch in `gen-values.py`, etc.) is a separate task — see
-[the S3 contract](#object-storage--the-s3-contract-read-this) below.
+[object storage](#object-storage--bucket-per-store-read-this) below.
 
 ## Naming
 
@@ -31,12 +31,13 @@ Individual names can still be overridden (`cluster_name`, `bucket_name`, ...).
   prefix delegation on by default. API-mode access with the creator bootstrapped as cluster-admin.
 - Cluster and node IAM roles, and the **IAM OIDC provider** registered from the cluster's issuer —
   the trust anchor IRSA needs.
-- **Optional** (`enable_storage_identity`, default on) storage + IRSA sub-module: an S3 bucket, the
-  **seven** Nexus data-path key prefixes, a single IRSA role trusted by every blob-accessing
-  service account, and its bucket-scoped S3 policy. The seven prefixes derive from a single stem
-  (`blob_prefix`): `<stem>-db` (the whole DB data plane shares this one) plus six `<stem>-nexus-*`
-  (`source`, `knowledge`, `archive`, `traces`, `snapshots`, `library`). The suffix set is a fixed
-  product contract — the operator supplies only the stem.
+- **Optional** (`enable_storage_identity`, default on) storage + IRSA sub-module: the **seven**
+  Nexus data-path S3 buckets, a single IRSA role trusted by every blob-accessing service account,
+  and its S3 policy scoped to those buckets. The seven names derive from a single stem
+  (`blob_prefix`, plus a random suffix for S3 global uniqueness): `<stem>-db` (the whole DB data
+  plane shares this one bucket — its seven logical stores write disjoint keys) plus six
+  `<stem>-nexus-*` (`source`, `knowledge`, `archive`, `traces`, `snapshots`, `library`), one per
+  nexus store. The suffix set is a fixed product contract — the operator supplies only the stem.
 
 ## Networking — sizing the node subnet
 
@@ -51,29 +52,30 @@ smaller ("too few pod IPs for the EKS VPC CNI"). This module is more generous: a
 `az_count` or run multiple instances. `enable_prefix_delegation` (on by default) hands each ENI a
 `/28` prefix instead of single secondary IPs, lifting pods-per-node further.
 
-## Object storage — the S3 contract (read this)
+## Object storage — bucket-per-store (read this)
 
-**The installer's slim path emits Azure Blob values today.** `install/gen-values.py` writes the
-`blob.provider: abs` / `blob.abs.*` tree and has no S3 branch; there is no `blob.s3` slim schema in
-the repo yet. So the exact helm value keys a future AWS slim overlay will use are **not
-specified**, and this module cannot mirror keys that do not exist. Rather than guess silently, here
-is the assumption this module is built on, drawn from the validated AWS cell path:
+This mirrors the Azure layout one-for-one: **one DB bucket + six nexus buckets** (seven total),
+the S3 equivalent of the seven Azure containers-from-one-stem. Pinecone's blob layer maps each
+logical store to a whole bucket (there is no bucket+prefix mode), so bucket-per-store is the
+faithful translation — the DB shares one bucket across its seven logical stores (their keys are
+disjoint), and each nexus store gets its own.
 
-- pc-blob selects its driver from **`nexus.config.cloud.provider = "aws"`** (plus `cloud.region`),
-  **not** from a `blob.provider` string. On AWS the provider string is `"aws"`, not `"s3"`.
-- Credentials are **IRSA only** — the chart annotates each service account with
-  `eks.amazonaws.com/role-arn`; the AWS SDK default credential chain then picks up the web-identity
-  token. There is **no** account/key/`clientId`/`roleArn` field inside the storage values.
-- A live AWS cell uses **separate buckets** (3 Nexus: source/knowledge/archive, plus the DB's own
-  buckets). This module instead packs everything into **one bucket with seven key prefixes**
-  (`<stem>-db` + six `<stem>-nexus-*`), so the operator supplies a single stem. When the installer
-  grows an S3 branch, reconcile the two: either the branch consumes `blob_bucket` + `blob_prefix`
-  as a stem, or this module switches to per-bucket outputs. The prefixes need no provisioning on S3
-  (a prefix springs into being on first write); the module lays down one zero-byte marker each only
-  so the layout is visible via `aws s3 ls`.
+Two facts about how the chart consumes this, confirmed against the chart templates:
 
-The module outputs what any of those contracts needs: the **bucket**, the **prefix stem**, and the
-**IRSA role ARN**.
+- pc-blob selects its driver from **`nexus.config.cloud.provider = "aws"`** (plus `cloud.region`).
+  Credentials are **IRSA only** — the chart annotates each service account with
+  `eks.amazonaws.com/role-arn` (via the pass-through `serviceAccountAnnotations` value); the AWS
+  SDK default credential chain picks up the web-identity token. There is **no** account/key/
+  `clientId`/`roleArn` field inside the storage values.
+- The nexus half already takes explicit per-store bucket names (`config.storage.{source,knowledge,
+  archive,traces,snapshots,library}`) and emits them driver-neutrally, so it needs no chart change.
+  The DB half's blob-env template is Azure-only (`abs-blob-env.gotmpl`); an AWS slim install needs
+  the S3 sibling that points its seven stores at `db_bucket`. **The installer itself emits Azure
+  Blob values today** (`install/gen-values.py` has no S3 branch yet) — wiring these outputs in is
+  the separate later task.
+
+The module outputs what that path needs: the **DB bucket**, the **six nexus buckets** (by store),
+and the **IRSA role ARN**.
 
 ## Prerequisites
 
@@ -109,13 +111,13 @@ policy — the controller Helm install itself is a separate step).
 
 ## Wiring into the chart
 
-After apply, feed the outputs into the chart. Because the slim S3 overlay is not implemented yet
-(above), the mapping below is the intended target, not a wired contract:
+After apply, feed the outputs into the chart. Because the slim S3 overlay is not implemented in the
+installer yet (above), the mapping below is the intended target, not a wired contract:
 
 | Output | Chart value (intended) |
 |---|---|
-| `blob_bucket` | S3 bucket name |
-| `blob_prefix` | key-prefix stem (if the branch derives prefixes from a stem) |
+| `db_bucket` | db-slim `PINECONE_BLOB_STORE__*_BUCKET_NAME` (all seven DB stores point here) |
+| `nexus_buckets` | `config.storage.{source,knowledge,archive,traces,snapshots,library}` |
 | `irsa_role_arn` | each blob-accessing SA's `eks.amazonaws.com/role-arn` annotation |
 | `region` | `nexus.config.cloud.region` (with `cloud.provider = aws`) |
 

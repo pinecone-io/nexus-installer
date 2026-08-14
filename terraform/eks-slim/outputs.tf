@@ -36,19 +36,19 @@ output "get_credentials_command" {
 
 # --- storage / IRSA (null when enable_storage_identity = false) ---
 
-output "blob_bucket" {
-  description = "S3 bucket holding the Nexus data path -> chart storage bucket value."
-  value       = one(module.storage_identity[*].bucket_name)
+output "db_bucket" {
+  description = "Shared DB data-plane bucket -> chart db-slim PINECONE_BLOB_STORE__*_BUCKET_NAME."
+  value       = one(module.storage_identity[*].db_bucket)
 }
 
-output "blob_prefix" {
-  description = "Key-prefix stem the seven Nexus data-path prefixes derive from (chart prefix value)."
-  value       = one(module.storage_identity[*].blob_prefix)
+output "nexus_buckets" {
+  description = "Map of nexus logical store -> bucket name -> chart config.storage.<store>."
+  value       = one(module.storage_identity[*].nexus_buckets)
 }
 
-output "blob_prefix_names" {
-  description = "The seven data-path key prefixes provisioned from the stem (informational; the module lays down markers, no manual step needed)."
-  value       = one(module.storage_identity[*].prefix_names)
+output "bucket_names" {
+  description = "All seven buckets (DB + six nexus), informational."
+  value       = one(module.storage_identity[*].bucket_names)
 }
 
 output "irsa_role_arn" {

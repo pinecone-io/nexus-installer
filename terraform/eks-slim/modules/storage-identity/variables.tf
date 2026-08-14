@@ -1,10 +1,5 @@
-variable "bucket_name" {
-  description = "Globally-unique S3 bucket name (null -> composed <prefix>-<random> at the root)."
-  type        = string
-}
-
 variable "blob_prefix" {
-  description = "Stem the seven Nexus data-path key prefixes derive from (<stem>-db plus six <stem>-nexus-*). Feeds the chart's blob.s3 prefix; itself a stem, not a single prefix."
+  description = "Stem the seven bucket names derive from: <stem>-db plus six <stem>-nexus-* (source, knowledge, archive, traces, snapshots, library). A random suffix is appended for S3 global uniqueness."
   type        = string
 }
 
