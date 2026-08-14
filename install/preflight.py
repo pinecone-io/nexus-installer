@@ -401,8 +401,8 @@ def check_storage_auth(inp):
 # Fields the customer must fill with a value only they have; leftover example text
 # here is exactly what slipped through on a real install and failed at curation. Rule 3
 # (equals-example) is scoped to these [YOURS] fields so [DEFAULT]/[PINECONE] values that
-# are meant to be kept as-is (staticIndex.id == bakedIndexId, sourceRegistry, host.name)
-# never false-positive.
+# are meant to be kept as-is (staticIndex.id == bakedIndexId, host.name) never
+# false-positive.
 PLACEHOLDER_EXAMPLE_FIELDS = [
     "kubeContext",
     "registry.base",

@@ -298,7 +298,6 @@ def build_inputs_env(inp, dim, outdir):
         "REGISTRY_PASSWORD_ENV": req(inp, "registry.passwordEnv"),
         "PULL_SECRET_NAME": opt(inp, "registry.pullSecretName", "acr-pull"),
         "BUNDLE_TAG": str(req(inp, "bundle.tag")),
-        "SOURCE_REGISTRY": req(inp, "bundle.sourceRegistry"),
         "CHART_VERSION": f"0.0.0-bundle.{req(inp, 'bundle.tag')}",
         "STORAGE_ACCOUNT": req(inp, "storage.account"),
         "CONTAINER_PREFIX": req(inp, "storage.containerPrefix"),

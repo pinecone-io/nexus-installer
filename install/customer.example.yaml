@@ -42,12 +42,10 @@ registry:
 # --- Image bundle ------------------------------------------------------------
 # `tag` is the OCI chart version suffix (chart version = 0.0.0-bundle.<tag>), NOT an
 # image tag — the chart bakes the nexus/DB/FoundationDB image tags in at build time,
-# independent of this suffix (image-manifest.sh reads them from the render).
-# `sourceRegistry` is Pinecone's distribution registry the bundle originates from.
-# Both are values Pinecone hands you with the bundle — paste them, don't invent them.
+# independent of this suffix (image-manifest.sh reads them from the render). Pinecone
+# hands you this value with the bundle — paste it, don't invent it.
 bundle:
   tag: main-ce427c8                      # [PINECONE] nexus bundle tag == OCI chart version suffix
-  sourceRegistry: us-docker.pkg.dev/pinecone-artifacts/nexus  # [PINECONE] source you mirror FROM (we grant access)
   # The data plane BAKES these into the published OCI chart at build time and the
   # OCI install path cannot override them (see README "OCI vs local-chart path").
   # Pinecone ships these two values with the bundle. If your embedding dimension
