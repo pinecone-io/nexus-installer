@@ -91,7 +91,7 @@ def load_gen(name):
     if not os.path.exists(path):
         return None
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except (OSError, yaml.YAMLError):
         return None
@@ -433,7 +433,7 @@ def _iter_strings(node, prefix=""):
 
 def _load_example():
     try:
-        with open(os.path.join(HERE, "customer.example.yaml")) as f:
+        with open(os.path.join(HERE, "customer.example.yaml"), encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except (OSError, yaml.YAMLError):
         return None
@@ -530,7 +530,7 @@ def check_live(inp):
             "bundle publishes from (image-manifest.sh lists it) so it resolves the whole bundle."
         )
     else:
-        with open(manifest) as f:
+        with open(manifest, encoding="utf-8") as f:
             refs = [ln.strip() for ln in f if ln.strip()]
         for ref in refs:
             body = ref.split("/", 1)[1]      # strip host -> <repo...>/<name>:<tag>
@@ -628,7 +628,7 @@ def main():
     if not os.path.exists(args.inputs):
         sys.stderr.write(f"preflight: inputs file not found: {args.inputs}\n")
         sys.exit(2)
-    with open(args.inputs) as f:
+    with open(args.inputs, encoding="utf-8") as f:
         inp = yaml.safe_load(f) or {}
 
     print(f"Preflight: {args.inputs}" + ("  (static + live)" if args.live else "  (static)"))
