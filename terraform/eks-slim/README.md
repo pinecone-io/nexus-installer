@@ -27,10 +27,15 @@ Individual names can still be overridden (`cluster_name`, `bucket_name`, ...).
   subnet per AZ (node + pod IPs) plus a `/24` public subnet per AZ (NAT egress, optional ALB).
   See [networking](#networking--sizing-the-node-subnet) for why the private subnet is large.
 - EKS: single managed node group (2× `m6i.2xlarge`, provisional pending load sizing) across the
-  private subnets, with the `vpc-cni`, `kube-proxy`, and `coredns` addons. `vpc-cni` runs with
-  prefix delegation on by default. API-mode access with the creator bootstrapped as cluster-admin.
-- Cluster and node IAM roles, and the **IAM OIDC provider** registered from the cluster's issuer —
-  the trust anchor IRSA needs.
+  private subnets, with the `vpc-cni`, `kube-proxy`, `coredns`, and `aws-ebs-csi-driver` addons.
+  `vpc-cni` runs with prefix delegation on by default. API-mode access with the creator
+  bootstrapped as cluster-admin.
+- A **default `gp3` StorageClass** backed by the EBS CSI driver. EKS ships no working default
+  class (the legacy in-tree `gp2` provisioner is gone in current Kubernetes), so without this
+  stateful pods stay `Pending` on unbound PVCs; AKS provides one out of the box and this matches it.
+- Cluster and node IAM roles, the **IAM OIDC provider** registered from the cluster's issuer (the
+  trust anchor IRSA needs), and an IRSA role for the EBS CSI controller (managed nodes' IMDS hop
+  limit of 1 blocks the controller from borrowing node credentials, so it gets its own).
 - **Optional** (`enable_storage_identity`, default on) storage + IRSA sub-module: the **seven**
   Nexus data-path S3 buckets, a single IRSA role trusted by every blob-accessing service account,
   and its S3 policy scoped to those buckets. The seven names derive from a single stem

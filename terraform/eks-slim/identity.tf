@@ -47,7 +47,8 @@ resource "aws_iam_role" "node" {
 }
 
 # The three policies every EKS managed node needs: kubelet/cluster join, VPC CNI IP
-# management, and ECR pull. Pod-level S3 access is granted via IRSA, not the node role.
+# management, and ECR pull. Pod-level S3 and EBS access is granted via IRSA, not the node
+# role.
 resource "aws_iam_role_policy_attachment" "node" {
   for_each = toset([
     "AmazonEKSWorkerNodePolicy",
@@ -68,4 +69,43 @@ resource "aws_iam_openid_connect_provider" "this" {
   url             = aws_eks_cluster.this.identity[0].oidc[0].issuer
   client_id_list  = ["sts.amazonaws.com"]
   thumbprint_list = [data.tls_certificate.oidc.certificates[0].sha1_fingerprint]
+}
+
+# ---- EBS CSI driver IRSA role ---------------------------------------------
+# The controller reaches EC2 to create/attach volumes. Managed nodes default to an IMDS
+# hop limit of 1, which blocks the controller pod from reading node credentials via IMDS,
+# so it gets its own IRSA role instead of leaning on the node instance profile.
+
+locals {
+  oidc_host = replace(aws_eks_cluster.this.identity[0].oidc[0].issuer, "https://", "")
+}
+
+data "aws_iam_policy_document" "ebs_csi_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.this.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_host}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_host}:sub"
+      values   = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ebs_csi" {
+  name               = "role-${local.cluster_name}-ebs-csi"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi" {
+  role       = aws_iam_role.ebs_csi.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
