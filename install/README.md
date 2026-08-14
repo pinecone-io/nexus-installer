@@ -80,10 +80,11 @@ python3 gen-values.py
 python3 preflight.py                       # static invariants; fix any FAIL before continuing
 
 # 2. List the exact images + chart the install pulls. image-manifest derives the list
-#    from the chart render (the chart bakes the tags), so it pulls the OCI chart itself —
-#    log in to the source registry first. Pass --chart-path <dir> to render a local
-#    checkout instead of pulling:
-helm registry login <bundle.sourceRegistry host>            # the source you mirror FROM
+#    from the chart render (the chart bakes the tags), so it pulls the OCI chart from
+#    your own registry (registry.base) — the same chart install.sh uses, no route to
+#    Pinecone needed. Log in to your registry first (or reuse the login from step 4).
+#    Pass --chart-path <dir> to render a local checkout instead of pulling:
+helm registry login <registry.base host>                    # your registry
 ./image-manifest.sh --list
 
 # 3. Optional live checks (containers, image presence, identity in the cloud):
@@ -256,5 +257,10 @@ locally for you to send.
   credentials to `.secrets.env` (0600) and reuses them, so re-installs keep stable
   credentials — the session credential is your API login; keep the file safe.
 - **Idempotent.** `create-secrets.sh` and the mirror are safe to re-run.
+- **Mirroring the bundle (operator-only).** Staging the bundle into `registry.base` from
+  Pinecone's distribution registry is a one-time step done by whoever has access to that
+  source — it is not part of a customer install, which reads only from `registry.base`.
+  For that step, `./image-manifest.sh --list --source` adds a "copy FROM" column mapping
+  each dest ref to Pinecone's registry (pass `--source <registry>` to override the source).
 - Expect ~20 helm client warnings like `hides previous definition of …` during install
   — they are by design and harmless.
