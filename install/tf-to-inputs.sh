@@ -20,10 +20,12 @@ need python3
 [ -d "$TF_DIR" ] || die "terraform dir not found: $TF_DIR"
 
 log "reading terraform outputs from $TF_DIR"
-terraform -chdir="$TF_DIR" output -json | python3 - <<'PY'
-import json, sys
+# Pass the JSON through the environment, not a pipe: `python3 - <<'PY'` reads its program
+# from stdin, so a piped `terraform output` would be shadowed by the heredoc and lost.
+TF_OUTPUT_JSON="$(terraform -chdir="$TF_DIR" output -json)" python3 - <<'PY'
+import json, os, sys
 
-o = json.load(sys.stdin)
+o = json.loads(os.environ["TF_OUTPUT_JSON"])
 def val(k):
     v = o.get(k, {}).get("value")
     return v if v not in (None, "") else None
