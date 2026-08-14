@@ -236,7 +236,7 @@ Nexus self-hosted support bundle
   context           : $KUBE_CONTEXT
   namespace         : $NAMESPACE
   release           : $RELEASE
-  bundle tag        : $BUNDLE_TAG (db $DB_TAG, fdb $FDB_TAG)
+  bundle tag        : $BUNDLE_TAG (DB/FDB image tags come from the chart render; see manifest.txt)
   log window        : --since $SINCE --tail $TAIL
   exec collectors   : $([ "$ALLOW_EXEC" = 1 ] && echo "enabled (version probe, fdbcli status)" || echo "disabled (pass --exec)")
   pods              : $pods_running running of $pods_total
