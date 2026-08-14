@@ -40,14 +40,13 @@ registry:
   pullSecretName: acr-pull               # [DEFAULT] name of the pull Secret to create + consume
 
 # --- Image bundle ------------------------------------------------------------
-# `tag` identifies the release: it is the OCI chart version suffix
-# (chart version = 0.0.0-bundle.<tag>) and the Nexus image tag. `sourceRegistry` is
-# Pinecone's distribution registry the bundle originates from. Those two are all you
-# supply; image-manifest.sh reads the DB and FoundationDB image tags from the chart
-# render. Every value in this block is one Pinecone hands you with the bundle — paste
-# it, don't make it up.
+# `tag` is the OCI chart version suffix (chart version = 0.0.0-bundle.<tag>), NOT an
+# image tag — the chart bakes the nexus/DB/FoundationDB image tags in at build time,
+# independent of this suffix (image-manifest.sh reads them from the render).
+# `sourceRegistry` is Pinecone's distribution registry the bundle originates from.
+# Both are values Pinecone hands you with the bundle — paste them, don't invent them.
 bundle:
-  tag: main-8119ef3                      # [PINECONE] nexus bundle tag == OCI chart version suffix
+  tag: main-ce427c8                      # [PINECONE] nexus bundle tag == OCI chart version suffix
   sourceRegistry: us-docker.pkg.dev/pinecone-artifacts/nexus  # [PINECONE] source you mirror FROM (we grant access)
   # The data plane BAKES these into the published OCI chart at build time and the
   # OCI install path cannot override them (see README "OCI vs local-chart path").
