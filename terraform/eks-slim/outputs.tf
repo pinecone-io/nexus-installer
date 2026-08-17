@@ -36,8 +36,13 @@ output "get_credentials_command" {
 
 # --- storage / IRSA (null when enable_storage_identity = false) ---
 
+output "bucket_prefix" {
+  description = "Bucket-name stem -> chart blob.s3.bucketPrefix (the DB + six nexus buckets derive from it)."
+  value       = one(module.storage_identity[*].bucket_prefix)
+}
+
 output "db_bucket" {
-  description = "Shared DB data-plane bucket -> chart db-slim PINECONE_BLOB_STORE__*_BUCKET_NAME."
+  description = "Shared DB data-plane bucket (informational; derives as <bucket_prefix>-db)."
   value       = one(module.storage_identity[*].db_bucket)
 }
 

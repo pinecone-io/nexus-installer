@@ -54,8 +54,7 @@ CONTAINER_SUFFIXES = [
     "nexus-library",
 ]
 
-# On s3 the six nexus stores are their own buckets (bucket-per-store); the DB shares a
-# seventh (storage.dbBucket).
+# The six nexus stores derive as <bucketPrefix>-nexus-<store>; the DB shares <bucketPrefix>-db.
 NEXUS_BUCKET_STORES = ["source", "knowledge", "archive", "traces", "snapshots", "library"]
 
 # Nexus images the chart deploys + the DB set + FoundationDB. Used by the
@@ -408,24 +407,21 @@ def check_storage_auth(inp):
 
 def check_buckets_s3(inp):
     section("S3 buckets")
-    db = get(inp, "storage.dbBucket")
-    if not db:
-        fail("storage.dbBucket is empty (blob.s3.dbBucket is required for s3)")
+    prefix = get(inp, "storage.bucketPrefix")
+    if not prefix:
+        fail("storage.bucketPrefix is empty (blob.s3.bucketPrefix is required for s3)")
     if not get(inp, "storage.region"):
         fail("storage.region is empty (blob.s3.region is required — the AWS SDK has no default)")
 
-    buckets = get(inp, "storage.buckets") or {}
-    missing = [s for s in NEXUS_BUCKET_STORES if not buckets.get(s)]
-    if missing:
-        fail(f"storage.buckets missing nexus store(s): {missing} — each nexus store is its own bucket")
-    elif db:
-        ok(f"7 buckets: {db} (db) + {', '.join(buckets[s] for s in NEXUS_BUCKET_STORES)}")
+    if prefix:
+        names = [f"{prefix}-db"] + [f"{prefix}-nexus-{s}" for s in NEXUS_BUCKET_STORES]
+        ok(f"7 buckets derive from stem '{prefix}': {', '.join(names)}")
 
     # Drift vs the emitted overlay, mirroring the abs container check.
     gs = load_gen("values.s3.yaml")
-    gen_db = get(gs, "blob.s3.dbBucket") if gs else None
-    if gen_db is not None and db and gen_db != db:
-        fail(f"dbBucket drift: input '{db}' != generated blob.s3.dbBucket '{gen_db}'")
+    gen_prefix = get(gs, "blob.s3.bucketPrefix") if gs else None
+    if gen_prefix is not None and prefix and gen_prefix != prefix:
+        fail(f"bucketPrefix drift: input '{prefix}' != generated blob.s3.bucketPrefix '{gen_prefix}'")
 
 
 def check_storage_irsa(inp):
@@ -600,12 +596,11 @@ def _live_abs_containers(inp):
 
 def _live_s3_buckets(inp):
     section("LIVE: S3 buckets")
-    db = get(inp, "storage.dbBucket")
-    buckets = get(inp, "storage.buckets") or {}
-    names = [n for n in [db] + [buckets.get(s) for s in NEXUS_BUCKET_STORES] if n]
-    if not names:
-        warn("no bucket names to check — skipping")
+    prefix = get(inp, "storage.bucketPrefix")
+    if not prefix:
+        warn("no bucketPrefix to check — skipping")
         return
+    names = [f"{prefix}-db"] + [f"{prefix}-nexus-{s}" for s in NEXUS_BUCKET_STORES]
     for name in names:
         rc, out = run(["aws", "s3api", "head-bucket", "--bucket", name])
         (ok if rc == 0 else fail)(

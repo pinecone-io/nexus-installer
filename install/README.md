@@ -205,10 +205,9 @@ If you provisioned the cluster with `terraform/aks-slim` (Azure) or `terraform/e
 
 The provider is auto-detected from the outputs. Azure maps `blob_storage_account →
 storage.account`, `blob_container → storage.containerPrefix`, `workload_identity_client_id
-→ storage.clientId` (defaulting `storage.auth: workload_identity`). AWS maps `db_bucket →
-storage.dbBucket`, `nexus_buckets → storage.buckets.*`, `irsa_role_arn → storage.roleArn`,
-`region → storage.region` (with `storage.provider: s3`). Both map `cluster_name →
-kubeContext`.
+→ storage.clientId` (defaulting `storage.auth: workload_identity`). AWS maps `bucket_prefix →
+storage.bucketPrefix`, `irsa_role_arn → storage.roleArn`, `region → storage.region` (with
+`storage.provider: s3`). Both map `cluster_name → kubeContext`.
 
 ## Where Pinecone takes over (hand-off points)
 

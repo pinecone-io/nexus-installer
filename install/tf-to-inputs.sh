@@ -32,27 +32,22 @@ def val(k):
 
 cluster = val("cluster_name")
 
-# eks-slim (AWS / s3) is distinguished by db_bucket; aks-slim (Azure / abs) by the account.
-db_bucket = val("db_bucket")
+# eks-slim (AWS / s3) is distinguished by bucket_prefix; aks-slim (Azure / abs) by the account.
+bucket_prefix = val("bucket_prefix")
 account = val("blob_storage_account")
 
-if db_bucket is not None:
+if bucket_prefix is not None:
     region = val("region")
     role_arn = val("irsa_role_arn")
-    buckets = val("nexus_buckets") or {}
     print("# --- generated from eks-slim terraform outputs; merge into customer.yaml ---")
     if cluster:
         # get_credentials_command sets the kube context to this alias.
         print(f"kubeContext: {cluster}")
     print("storage:")
     print("  provider: s3")
-    if db_bucket: print(f"  dbBucket: {db_bucket}")
+    print(f"  bucketPrefix: {bucket_prefix}")
     if region:   print(f"  region: {region}")
     if role_arn: print(f"  roleArn: {role_arn}")
-    print("  buckets:")
-    for store in ("source", "knowledge", "archive", "traces", "snapshots", "library"):
-        if buckets.get(store):
-            print(f"    {store}: {buckets[store]}")
     sys.exit(0)
 
 if account is None and val("workload_identity_client_id") is None:

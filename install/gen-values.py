@@ -83,10 +83,6 @@ def container_names(prefix):
     return [f"{prefix}-{s}" for s in CONTAINER_SUFFIXES]
 
 
-# The nexus half addresses its six object stores by name; on abs they are containers, on
-# s3 they are buckets (bucket-per-store, no shared prefix). Same fixed store set either way.
-NEXUS_STORES = ["source", "knowledge", "archive", "traces", "snapshots", "library"]
-
 
 def storage_provider(inp):
     p = opt(inp, "storage.provider", "abs")
@@ -219,28 +215,19 @@ def build_abs_values(inp):
 
 def build_s3_values(inp):
     region = req(inp, "storage.region")
-    role_arn = req(inp, "storage.roleArn")
+    # The chart derives the seven bucket names from the stem and the IRSA SA annotation from
+    # roleArn (charts/nexus/templates/_helpers.tpl), so nothing here is hand-listed per store.
     s3_block = {
-        "dbBucket": req(inp, "storage.dbBucket"),
+        "bucketPrefix": req(inp, "storage.bucketPrefix"),
         "region": region,
-        "roleArn": role_arn,
+        "roleArn": req(inp, "storage.roleArn"),
     }
-    # Bucket-per-store: the DB shares one bucket (blob.s3.dbBucket); each nexus store is its
-    # own bucket, addressed by name under nexus.config.storage (no prefix derivation on s3).
-    nexus_storage = {"localRoot": ""}
-    for s in NEXUS_STORES:
-        nexus_storage[s] = req(inp, f"storage.buckets.{s}")
-
     blob = {"provider": "s3", "s3": dict(s3_block)}
     return {
         "blob": blob,
         "global": {"blob": {"provider": "s3", "s3": dict(s3_block)}},
         "db-slim": DBSLIM_DATA_DIR_OVERLAY,
-        "nexus": {
-            "config": {"cloud": {"provider": "aws", "region": region}, "storage": nexus_storage},
-            # IRSA: each blob-accessing SA assumes this role. No key Secret exists.
-            "serviceAccountAnnotations": {"eks.amazonaws.com/role-arn": role_arn},
-        },
+        "nexus": {"config": {"cloud": {"provider": "aws", "region": region}, "storage": {"localRoot": ""}}},
     }
 
 
@@ -368,7 +355,7 @@ def build_inputs_env(inp, dim, outdir):
         env["STORAGE_VALUES"] = "values.s3.yaml"
         env["STORAGE_AUTH"] = "irsa"
         env["STORAGE_EXISTING_SECRET"] = ""
-        env["DB_BUCKET"] = req(inp, "storage.dbBucket")
+        env["BUCKET_PREFIX"] = req(inp, "storage.bucketPrefix")
         env["BLOB_REGION"] = req(inp, "storage.region")
         env["IRSA_ROLE_ARN"] = req(inp, "storage.roleArn")
 

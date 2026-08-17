@@ -59,21 +59,20 @@ instead of single secondary IPs, lifting pods-per-node further.
 ## Object storage — bucket-per-store
 
 pc-blob maps each logical store to a whole bucket — there is no bucket+prefix mode — so the layout
-is **one DB bucket + six nexus buckets** (seven total): the DB shares one bucket across its seven
-logical stores (their keys are disjoint), and each nexus store gets its own.
+is **one DB bucket + six nexus buckets** (seven total), all named from one stem: `<prefix>-db`
+(the DB shares this across its seven logical stores, whose keys are disjoint) and
+`<prefix>-nexus-<store>` for each nexus store.
 
 How the chart consumes these:
 
 - pc-blob selects its driver from **`nexus.config.cloud.provider = "aws"`** (plus `cloud.region`).
-  Credentials are **IRSA only** — each service account is annotated with
-  `eks.amazonaws.com/role-arn` (via the pass-through `serviceAccountAnnotations` value) and the AWS
-  SDK default credential chain picks up the web-identity token; no account or key field appears in
-  the storage values.
-- The nexus half takes explicit per-store bucket names (`config.storage.{source,knowledge,archive,
-  traces,snapshots,library}`); the DB half points its seven stores at the single DB bucket.
+  Credentials are **IRSA only** — no account or key field appears in the storage values.
+- The chart derives the seven bucket names from **`blob.s3.bucketPrefix`** and annotates every
+  blob-accessing service account with `eks.amazonaws.com/role-arn` from **`blob.s3.roleArn`**, so
+  neither the per-store names nor the annotation are hand-listed.
 
 `install/gen-values.py` renders these into `values.s3.yaml` from `customer.yaml`. This module
-outputs the **DB bucket**, the **six nexus buckets** (by store), and the **IRSA role ARN**.
+outputs the **bucket prefix**, the **region**, and the **IRSA role ARN**.
 
 ## Prerequisites
 
@@ -114,10 +113,9 @@ them into `values.s3.yaml`. The mapping:
 
 | Output | Chart value |
 |---|---|
-| `db_bucket` | db-slim `PINECONE_BLOB_STORE__*_BUCKET_NAME` (all seven DB stores point here) |
-| `nexus_buckets` | `config.storage.{source,knowledge,archive,traces,snapshots,library}` |
-| `irsa_role_arn` | each blob-accessing SA's `eks.amazonaws.com/role-arn` annotation |
-| `region` | `nexus.config.cloud.region` (with `cloud.provider = aws`) |
+| `bucket_prefix` | `blob.s3.bucketPrefix` (the seven bucket names derive from it) |
+| `irsa_role_arn` | `blob.s3.roleArn` — annotated onto every blob-accessing SA |
+| `region` | `blob.s3.region` / `nexus.config.cloud.region` (with `cloud.provider = aws`) |
 
 IRSA trust is wired **automatically**. The module trusts every blob-accessing service account the
 umbrella chart runs — the two `nexus-*` SAs (named after `helm_release_name`) plus the five

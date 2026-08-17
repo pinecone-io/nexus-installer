@@ -1,5 +1,10 @@
+output "bucket_prefix" {
+  description = "Stem the seven bucket names derive from (<stem>-db + six <stem>-nexus-*) -> chart blob.s3.bucketPrefix."
+  value       = local.stem
+}
+
 output "db_bucket" {
-  description = "The shared DB data-plane bucket -> chart db-slim PINECONE_BLOB_STORE__*_BUCKET_NAME (all seven DB stores)."
+  description = "The shared DB data-plane bucket (informational; derives as <bucket_prefix>-db)."
   value       = aws_s3_bucket.nexus["db"].bucket
 }
 
