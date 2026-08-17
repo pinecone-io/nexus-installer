@@ -118,6 +118,33 @@ inference:
   embeddingKeyEnv: NEXUS_LLM_KEY         # [DEFAULT] env var name holding the embedding key (often the same AOAI key)
   rerankKeyEnv: NEXUS_RERANK_KEY         # [DEFAULT] env var name holding the rerank key
 
+  # --- [OPTIONAL] Reach chat + embedding through an internal API gateway -----
+  # For a provider with no static key and no public network path, where every call
+  # goes through an API-management front door instead. Uncomment the block and:
+  #   - `endpoint` above becomes the GATEWAY base (the part before /deployments/...),
+  #     e.g. https://gateway.dev.acme.com/df/genai/sit
+  #   - llmKeyEnv / embeddingKeyEnv become unused: the per-request credential is an
+  #     OAuth2 token the inference proxy mints and refreshes itself. What you supply
+  #     is the long-lived client id/secret behind it.
+  #   - rerank is unaffected and still uses rerankEndpoint + rerankKeyEnv.
+  # Verify it before installing: python3 preflight.py --live-gateway
+  #
+  # gateway:
+  #   tokenUrl: https://acme.okta.com/oauth2/aus1abc/v1/token   # [YOURS] token endpoint
+  #   clientIdEnv: NEXUS_GATEWAY_CLIENT_ID                      # [YOURS] env var holding the client id
+  #   clientSecretEnv: NEXUS_GATEWAY_CLIENT_SECRET              # [YOURS] env var holding the client secret
+  #   scope: genai.invoke                    # [OPTIONAL] omit if your client needs no scope
+  #   clientAuth: basic                      # [DEFAULT] basic | post -- how the client authenticates to the token endpoint
+  #   subscriptionKeyEnv: NEXUS_GATEWAY_SUBSCRIPTION_KEY  # [OPTIONAL] env var holding the gateway's own key
+  #   subscriptionHeader: Ocp-Apim-Subscription-Key       # [DEFAULT] header that key travels in
+  #   apiVersion: 2025-01-01-preview         # [OPTIONAL] sent as the ?api-version= query param
+  #
+  # Gateway-path only: the proxy cannot introspect the deployment's limits when it
+  # talks to a gateway, so state them. Defaults below suit a gpt-5-class deployment;
+  # they must not exceed what your deployment actually allows.
+  # contextWindow: 272000                    # [DEFAULT] chat model context window
+  # maxOutputTokens: 16384                   # [DEFAULT] chat model max output tokens
+
 # --- Embedding dimension (THE consistency lynchpin) --------------------------
 # One value feeds staticIndex.dimension, nexus.config.indexMetadata.dimension, and
 # nexus.config.embeddingModel.dimension, and it must equal the width the embedding

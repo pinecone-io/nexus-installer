@@ -16,6 +16,11 @@ STATIC checks (default, values-only, no cloud access):
   - no leftover example/placeholder values (an `acme` token, an unfilled <...>, or a
     [YOURS] field still equal to customer.example.yaml).
 
+LIVE gateway check (--live-gateway, opt-in, makes real HTTP calls):
+  - mints an OAuth2 client_credentials token and makes one 1-token chat completion
+    through the gateway, so a wrong client secret / scope / gateway environment fails
+    here in seconds instead of as 401s after the install.
+
 LIVE checks (--live, opt-in, shells out to az/kubectl):
   - kube context reachable.
   - the seven blob containers exist.
@@ -28,11 +33,15 @@ Exit 0 only if no check FAILs. WARN never fails the run.
 Usage: python3 preflight.py [-f customer.yaml] [--live]
 """
 import argparse
+import base64
 import json
 import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
 try:
     import yaml
@@ -331,11 +340,33 @@ def check_inference(inp):
         models.update(inf.get(group, {}) or {})
     provider_keys = set((inf.get("providerKeys") or {}).keys())
     refs = {m.get("api_key_ref") for m in models.values() if isinstance(m, dict) and m.get("api_key_ref")}
+    credentials = inf.get("credentials") or {}
+    for cred in credentials.values():
+        if isinstance(cred, dict):
+            refs.update(
+                cred[field]
+                for field in ("client_id_ref", "client_secret_ref")
+                if cred.get(field)
+            )
+    for m in models.values():
+        if isinstance(m, dict):
+            refs.update((m.get("extra_header_refs") or {}).values())
     missing = refs - provider_keys
     if missing:
-        fail(f"api_key_ref(s) without a providerKeys entry: {sorted(missing)}")
+        fail(f"credential ref(s) without a providerKeys entry: {sorted(missing)}")
     else:
-        ok(f"every catalog api_key_ref has a providerKeys entry ({sorted(refs)})")
+        ok(f"every catalog credential ref has a providerKeys entry ({sorted(refs)})")
+
+    dangling = {
+        cid: m["credential_ref"]
+        for cid, m in models.items()
+        if isinstance(m, dict) and m.get("credential_ref")
+        and m["credential_ref"] not in credentials
+    }
+    if dangling:
+        fail(f"model(s) whose credential_ref names no credentials entry: {dangling}")
+    elif credentials:
+        ok(f"credential_ref(s) resolve to a defined credentials entry ({sorted(credentials)})")
 
     catalog_ids = set(models.keys())
     tiers = inf.get("tiers") or {}
@@ -375,6 +406,111 @@ def check_inference(inp):
             "azure_ai expects LiteLLM's canonical name (e.g. cohere-rerank-v4.0-fast), which must "
             "also be your Foundry deployment name."
         )
+
+
+def check_live_gateway(inp):
+    """Mint a token and make one real chat call through the gateway.
+
+    This is the cheap version of the failure it prevents: a wrong client secret,
+    an unauthorized scope or the wrong gateway environment otherwise surfaces as
+    401s from the proxy long after a 25-minute install has finished.
+    """
+    section("Gateway credentials (live)")
+    gw = get(inp, "inference.gateway")
+    if not gw:
+        ok("no inference.gateway block; chat + embedding go straight to the provider")
+        return
+
+    token_url = get(inp, "inference.gateway.tokenUrl")
+    client_id = os.environ.get(get(inp, "inference.gateway.clientIdEnv") or "", "")
+    client_secret = os.environ.get(get(inp, "inference.gateway.clientSecretEnv") or "", "")
+    if not (token_url and client_id and client_secret):
+        fail(
+            "inference.gateway needs tokenUrl plus the client id / secret present in "
+            f"{get(inp, 'inference.gateway.clientIdEnv')!r} and "
+            f"{get(inp, 'inference.gateway.clientSecretEnv')!r} in this shell"
+        )
+        return
+
+    form = {"grant_type": "client_credentials"}
+    scope = get(inp, "inference.gateway.scope")
+    if scope:
+        form["scope"] = scope
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    if (get(inp, "inference.gateway.clientAuth") or "basic") == "basic":
+        basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        headers["Authorization"] = f"Basic {basic}"
+    else:
+        form["client_id"] = client_id
+        form["client_secret"] = client_secret
+
+    status, body = _http_post(token_url, urllib.parse.urlencode(form).encode(), headers)
+    if status != 200:
+        fail(
+            f"token endpoint returned HTTP {status}: {body[:200]}. Check the client "
+            "id / secret, the scope, and that the client is authorized for THIS "
+            "gateway environment (a wrong environment answers like an unauthorized "
+            "client)."
+        )
+        return
+    try:
+        token = json.loads(body)["access_token"]
+    except Exception:
+        fail(f"token endpoint returned no access_token: {body[:200]}")
+        return
+    ttl = json.loads(body).get("expires_in", "unset")
+    ok(f"minted a token (expires_in={ttl}); the proxy refreshes it in-process")
+
+    endpoint = (get(inp, "inference.endpoint") or "").rstrip("/")
+    chat = get(inp, "inference.chatDeployment")
+    url = f"{endpoint}/deployments/{chat}/chat/completions"
+    api_version = get(inp, "inference.gateway.apiVersion")
+    if api_version:
+        url = f"{url}?api-version={urllib.parse.quote(api_version)}"
+    call_headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+    key_env = get(inp, "inference.gateway.subscriptionKeyEnv")
+    if key_env:
+        subscription_key = os.environ.get(key_env, "")
+        if not subscription_key:
+            fail(f"inference.gateway.subscriptionKeyEnv={key_env!r} is not set in this shell")
+            return
+        header = get(inp, "inference.gateway.subscriptionHeader") or "Ocp-Apim-Subscription-Key"
+        call_headers[header] = subscription_key
+
+    payload = json.dumps(
+        {"messages": [{"role": "user", "content": "ping"}], "max_completion_tokens": 1}
+    ).encode()
+    status, body = _http_post(url, payload, call_headers)
+    if status == 200:
+        ok(f"chat completion through the gateway succeeded ({url})")
+    elif status == 401:
+        fail(
+            f"gateway returned 401 for {url}: {body[:200]}. The token minted, so this "
+            "is the second credential (the subscription key) or an authorization "
+            "scope that does not cover this product."
+        )
+    elif status == 404:
+        fail(
+            f"gateway returned 404 for {url}: {body[:200]}. inference.endpoint must be "
+            "the gateway base up to but NOT including /deployments/, and the "
+            "deployment name must match the gateway's own route."
+        )
+    else:
+        fail(f"gateway returned HTTP {status} for {url}: {body[:200]}")
+
+
+def _http_post(url, data, headers, timeout=20):
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read().decode(errors="replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(errors="replace")
+    except Exception as e:
+        return 0, f"{type(e).__name__}: {e}"
 
 
 def check_registry(inp):
@@ -836,6 +972,9 @@ def main():
     ap.add_argument("--gen-dir", default=os.path.join(HERE, "generated"),
                     help="dir with the generated overlays to cross-check (default: generated/)")
     ap.add_argument("--live", action="store_true", help="also run cloud/cluster checks (az/kubectl)")
+    ap.add_argument("--live-gateway", action="store_true",
+                    help="also mint a gateway token and make one real chat call "
+                         "(needs the client id/secret env vars in this shell)")
     args = ap.parse_args()
 
     global _gen_dir
@@ -868,6 +1007,8 @@ def main():
     check_placeholders(inp)
     if args.live:
         check_live(inp)
+    if args.live_gateway:
+        check_live_gateway(inp)
 
     print()
     if _fails:

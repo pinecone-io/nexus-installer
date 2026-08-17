@@ -113,24 +113,58 @@ build_set_args() {
     out=(
       --set "nexus.auth.jwtSecret=dryrun-placeholder"
       --set "nexus.config.byocSessionCredential=dryrun-placeholder"
-      --set "nexus.inference.providerKeys.$LLM_KEY_REF=dryrun-placeholder"
-      --set "nexus.inference.providerKeys.$EMBED_KEY_REF=dryrun-placeholder"
       --set "nexus.inference.providerKeys.$RERANK_KEY_REF=dryrun-placeholder"
     )
+    if [ "${GATEWAY_ENABLED:-0}" = 1 ]; then
+      out+=(
+        --set "nexus.inference.providerKeys.$GATEWAY_CLIENT_ID_REF=dryrun-placeholder"
+        --set "nexus.inference.providerKeys.$GATEWAY_CLIENT_SECRET_REF=dryrun-placeholder"
+      )
+      [ -n "${GATEWAY_SUBSCRIPTION_KEY_REF:-}" ] && out+=(
+        --set "nexus.inference.providerKeys.$GATEWAY_SUBSCRIPTION_KEY_REF=dryrun-placeholder"
+      )
+    else
+      out+=(
+        --set "nexus.inference.providerKeys.$LLM_KEY_REF=dryrun-placeholder"
+        --set "nexus.inference.providerKeys.$EMBED_KEY_REF=dryrun-placeholder"
+      )
+    fi
     return
   fi
   load_or_make_creds
-  local llm embed rerank
-  llm="$(secret_from_env "$LLM_KEY_ENV")"
-  embed="$(secret_from_env "$EMBEDDING_KEY_ENV")"
+  local rerank
   rerank="$(secret_from_env "$RERANK_KEY_ENV")"
   out=(
     --set "nexus.auth.jwtSecret=$NEXUS_JWT_SECRET"
     --set "nexus.config.byocSessionCredential=$NEXUS_SESSION_CREDENTIAL"
-    --set "nexus.inference.providerKeys.$LLM_KEY_REF=$llm"
-    --set "nexus.inference.providerKeys.$EMBED_KEY_REF=$embed"
     --set "nexus.inference.providerKeys.$RERANK_KEY_REF=$rerank"
   )
+  if [ "${GATEWAY_ENABLED:-0}" = 1 ]; then
+    # The chat/embedding credential is a token the proxy mints per refresh window;
+    # what gets injected here is the long-lived OAuth2 client behind it.
+    local client_id client_secret
+    client_id="$(secret_from_env "$GATEWAY_CLIENT_ID_ENV")"
+    client_secret="$(secret_from_env "$GATEWAY_CLIENT_SECRET_ENV")"
+    out+=(
+      --set "nexus.inference.providerKeys.$GATEWAY_CLIENT_ID_REF=$client_id"
+      --set "nexus.inference.providerKeys.$GATEWAY_CLIENT_SECRET_REF=$client_secret"
+    )
+    if [ -n "${GATEWAY_SUBSCRIPTION_KEY_REF:-}" ]; then
+      local subscription_key
+      subscription_key="$(secret_from_env "$GATEWAY_SUBSCRIPTION_KEY_ENV")"
+      out+=(
+        --set "nexus.inference.providerKeys.$GATEWAY_SUBSCRIPTION_KEY_REF=$subscription_key"
+      )
+    fi
+  else
+    local llm embed
+    llm="$(secret_from_env "$LLM_KEY_ENV")"
+    embed="$(secret_from_env "$EMBEDDING_KEY_ENV")"
+    out+=(
+      --set "nexus.inference.providerKeys.$LLM_KEY_REF=$llm"
+      --set "nexus.inference.providerKeys.$EMBED_KEY_REF=$embed"
+    )
+  fi
 }
 
 SET_ARGS=()
