@@ -14,6 +14,10 @@ Pinecone account team before you begin.
 - `terraform/aks-slim/` — optional Terraform for a ready-made AKS cluster on Azure. Skip
   it if you already have a cluster; it provisions infrastructure only and is not required
   by the install. See `terraform/aks-slim/README.md`.
+- `terraform/eks-slim/` — optional Terraform for a ready-made EKS cluster on AWS, with S3
+  buckets and IRSA for keyless object-storage access. Skip it if you already have a
+  cluster; it provisions infrastructure only and is not required by the install. See
+  `terraform/eks-slim/README.md`.
 
 The Helm chart is published as an OCI artifact alongside the image bundle;
 `image-manifest.sh` lists what to stage in your registry and `install.sh` consumes the
