@@ -445,6 +445,15 @@ def check_live_gateway(inp):
         form["client_secret"] = client_secret
 
     status, body = _http_post(token_url, urllib.parse.urlencode(form).encode(), headers)
+    if status == 0:
+        fail(
+            f"could not reach the token endpoint {token_url} at all: {body[:200]}. This "
+            "is a reachability problem, not a credential one — the credentials were "
+            "never presented. This host needs a firewall/DNS allowance to the "
+            "authorization server (a separate one from the gateway itself), or run "
+            "this check from a host that has it."
+        )
+        return
     if status != 200:
         fail(
             f"token endpoint returned HTTP {status}: {body[:200]}. Check the client "
@@ -486,6 +495,13 @@ def check_live_gateway(inp):
     status, body = _http_post(url, payload, call_headers)
     if status == 200:
         ok(f"chat completion through the gateway succeeded ({url})")
+    elif status == 0:
+        fail(
+            f"could not reach the gateway {url} at all: {body[:200]}. The token minted, "
+            "so the credentials are fine — this host needs a firewall/DNS allowance to "
+            "the gateway (a separate one from the authorization server), or run this "
+            "check from a host that has it."
+        )
     elif status == 401:
         fail(
             f"gateway returned 401 for {url}: {body[:200]}. The token minted, so this "

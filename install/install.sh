@@ -120,9 +120,11 @@ build_set_args() {
         --set "nexus.inference.providerKeys.$GATEWAY_CLIENT_ID_REF=dryrun-placeholder"
         --set "nexus.inference.providerKeys.$GATEWAY_CLIENT_SECRET_REF=dryrun-placeholder"
       )
-      [ -n "${GATEWAY_SUBSCRIPTION_KEY_REF:-}" ] && out+=(
-        --set "nexus.inference.providerKeys.$GATEWAY_SUBSCRIPTION_KEY_REF=dryrun-placeholder"
-      )
+      if [ -n "${GATEWAY_SUBSCRIPTION_KEY_REF:-}" ]; then
+        out+=(
+          --set "nexus.inference.providerKeys.$GATEWAY_SUBSCRIPTION_KEY_REF=dryrun-placeholder"
+        )
+      fi
     else
       out+=(
         --set "nexus.inference.providerKeys.$LLM_KEY_REF=dryrun-placeholder"

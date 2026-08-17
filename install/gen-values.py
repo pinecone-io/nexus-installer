@@ -24,6 +24,7 @@ import argparse
 import os
 import shlex
 import sys
+import urllib.parse
 
 try:
     import yaml
@@ -293,19 +294,36 @@ def rerank_catalog_entry(provider, deployment, endpoint):
 
 def gateway_spec(inp):
     """The inference.gateway block, or None for the direct-to-provider posture."""
-    gw = opt(inp, "inference.gateway", None)
-    if not gw:
+    inference = inp.get("inference")
+    if not isinstance(inference, dict) or "gateway" not in inference:
         return None
+    if not inference["gateway"]:
+        die(
+            "inference.gateway is present but empty. Either fill it in (tokenUrl, "
+            "clientIdEnv, clientSecretEnv at minimum) or remove the `gateway:` line: "
+            "an empty block would install the direct-to-provider catalog against what "
+            "inference.endpoint now spells as a gateway base, and chat + embedding "
+            "would fail at runtime. If you uncommented `gateway:` in customer.yaml, "
+            "uncomment its fields too."
+        )
+    key_env = opt(inp, "inference.gateway.subscriptionKeyEnv", "")
+    header = opt(inp, "inference.gateway.subscriptionHeader", None)
+    if header and not key_env:
+        die(
+            "inference.gateway.subscriptionHeader is set but "
+            "inference.gateway.subscriptionKeyEnv is not, so no subscription key would "
+            "be sent and the gateway would reject every call. Set subscriptionKeyEnv to "
+            "the env var holding the key, or drop subscriptionHeader if your gateway "
+            "needs no key."
+        )
     spec = {
         "token_url": req(inp, "inference.gateway.tokenUrl"),
         "client_id_env": req(inp, "inference.gateway.clientIdEnv"),
         "client_secret_env": req(inp, "inference.gateway.clientSecretEnv"),
         "scope": opt(inp, "inference.gateway.scope", ""),
         "client_auth": opt(inp, "inference.gateway.clientAuth", "basic"),
-        "subscription_key_env": opt(inp, "inference.gateway.subscriptionKeyEnv", ""),
-        "subscription_header": opt(
-            inp, "inference.gateway.subscriptionHeader", DEFAULT_SUBSCRIPTION_HEADER
-        ),
+        "subscription_key_env": key_env,
+        "subscription_header": header or DEFAULT_SUBSCRIPTION_HEADER,
         "api_version": opt(inp, "inference.gateway.apiVersion", ""),
     }
     if spec["client_auth"] not in ("basic", "post"):
@@ -313,6 +331,16 @@ def gateway_spec(inp):
     if not spec["token_url"].startswith(("http://", "https://")):
         die("inference.gateway.tokenUrl must be an absolute http(s) URL")
     return spec
+
+
+def cleartext_token_url_host(token_url):
+    """The non-loopback host of an http:// token URL, else "" (nothing to warn about)."""
+    if not token_url.startswith("http://"):
+        return ""
+    host = urllib.parse.urlsplit(token_url).hostname or ""
+    if host in ("localhost", "127.0.0.1", "::1") or host.startswith("127."):
+        return ""
+    return host
 
 
 def _gateway_model_extras(gw):
@@ -339,6 +367,15 @@ def build_self_hosted_values(inp, dim):
     rerank_model, rerank_base_url = rerank_catalog_entry(rerank_provider, rerank, rerank_endpoint)
 
     gw = gateway_spec(inp)
+    if gw and ("/deployments/" in endpoint or endpoint.rstrip("/").endswith("/deployments")):
+        die(
+            f"inference.endpoint={endpoint!r} already contains /deployments/. With a "
+            "gateway configured it must be the gateway base up to but NOT including "
+            "/deployments/ — the generator appends /deployments/<deployment> itself, so "
+            f"this would produce base_url {endpoint.rstrip('/')}/deployments/{chat}, "
+            "which the gateway answers with a 404 at runtime. Trim everything from "
+            "/deployments onward."
+        )
 
     # the proxy requires each tier to resolve to a distinct model ref
     tier_labels = {"lite": "Chat (lite)", "standard": "Chat (standard)", "pro": "Chat (pro)"}
@@ -446,6 +483,14 @@ def build_self_hosted_values(inp, dim):
             "gen-values: note: inference.gateway applies to chat + embedding only; "
             "rerank still uses inference.rerankEndpoint with its own key.\n"
         )
+        cleartext_host = cleartext_token_url_host(gw["token_url"])
+        if cleartext_host:
+            sys.stderr.write(
+                "gen-values: note: inference.gateway.tokenUrl is http:// (host "
+                f"{cleartext_host}), so the OAuth2 client secret crosses the network in "
+                "cleartext on every token refresh. Use https:// unless this is a local "
+                "stand-in gateway.\n"
+            )
     else:
         provider_keys[LLM_KEY_REF] = ""
         provider_keys[EMBED_KEY_REF] = ""
