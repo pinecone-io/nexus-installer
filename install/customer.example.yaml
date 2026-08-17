@@ -45,7 +45,7 @@ registry:
 # independent of this suffix (image-manifest.sh reads them from the render). Pinecone
 # hands you this value with the bundle — paste it, don't invent it.
 bundle:
-  tag: main-ce427c8                      # [PINECONE] nexus bundle tag == OCI chart version suffix
+  tag: main-e214bcc                      # [PINECONE] nexus bundle tag == OCI chart version suffix
   # The data plane BAKES these into the published OCI chart at build time and the
   # OCI install path cannot override them (see README "OCI vs local-chart path").
   # Pinecone ships these two values with the bundle. If your embedding dimension
