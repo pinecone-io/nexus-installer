@@ -45,7 +45,7 @@ registry:
 # independent of this suffix (image-manifest.sh reads them from the render). Pinecone
 # hands you this value with the bundle — paste it, don't invent it.
 bundle:
-  tag: main-ce427c8                      # [PINECONE] nexus bundle tag == OCI chart version suffix
+  tag: main-e214bcc                      # [PINECONE] nexus bundle tag == OCI chart version suffix
   # The data plane BAKES these into the published OCI chart at build time and the
   # OCI install path cannot override them (see README "OCI vs local-chart path").
   # Pinecone ships these two values with the bundle. If your embedding dimension
@@ -63,10 +63,12 @@ staticIndex:
   name: nexus-hybrid                          # [DEFAULT]  -> staticIndex.name
   # dimension is taken from embedding.dimension below (one source of truth).
 
-# --- Blob storage (Azure) ----------------------------------------------------
-# You pre-create the account and the seven containers (see README).
-# `containerPrefix` is the stem the seven names derive from.
+# --- Object storage ----------------------------------------------------------
+# provider: abs (Azure Blob, below) or s3 (AWS, further down). You pre-create the
+# storage; tf-to-inputs.sh fills this block from the aks-slim / eks-slim outputs.
 storage:
+  provider: abs                          # [YOURS]   abs | s3
+  # --- provider: abs (Azure Blob) — seven containers from one stem (see README) ---
   account: acmenexusstore                # [YOURS]   -> blob.abs.account
   containerPrefix: acme                  # [YOURS]   -> blob.abs.containerPrefix; 7 containers:
                                          #            <stem>-db + <stem>-nexus-{source,knowledge,archive,traces,snapshots,library}
@@ -76,6 +78,11 @@ storage:
   storageKeyEnv: NEXUS_STORAGE_KEY       # [DEFAULT] env var name holding the storage account key
   # --- workload_identity only ---
   clientId: ""                           # [YOURS]   user-assigned managed identity client id -> blob.abs.clientId
+  # --- provider: s3 (AWS) — bucket-per-store, keyless IRSA (delete the abs keys above) ---
+  # provider: s3
+  # bucketPrefix: acme-abc123            # [YOURS]  stem: <prefix>-db + six <prefix>-nexus-* -> blob.s3.bucketPrefix
+  # region: us-east-1                    # [YOURS]  bucket region -> blob.s3.region (the AWS SDK has no default)
+  # roleArn: arn:aws:iam::<acct>:role/<role>   # [YOURS] IRSA role every blob-accessing SA assumes
 
 # --- Model endpoints (OpenAI-compatible: Azure OpenAI + Azure AI Foundry) -----
 # You create the chat/embedding/rerank deployments, but their NAMES must be ones

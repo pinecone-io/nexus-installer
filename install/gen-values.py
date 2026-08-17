@@ -83,6 +83,14 @@ def container_names(prefix):
     return [f"{prefix}-{s}" for s in CONTAINER_SUFFIXES]
 
 
+
+def storage_provider(inp):
+    p = opt(inp, "storage.provider", "abs")
+    if p not in ("abs", "s3"):
+        die(f"storage.provider must be abs or s3, got {p!r}")
+    return p
+
+
 class BlockDumper(yaml.SafeDumper):
     # Expand every node inline (no anchors) so each emitted file is independently
     # editable — same rationale as gen-dbslim-values.py's NoAliasDumper.
@@ -144,11 +152,10 @@ def build_install_values(inp, dim):
     return values
 
 
-# The db-slim data-dir overlay is a required part of the abs profile: the base
-# renders ssd-volume as an emptyDir, so --data-dir must sit at the mount root or the
-# service ENOENTs at startup. Copied verbatim from the chart's values.abs.yaml so the
-# generated overlay stays faithful to the reference contract.
-DBSLIM_ABS_OVERLAY = {
+# The db-slim data-dir overlay: the base renders ssd-volume as an emptyDir, so --data-dir
+# must sit at the mount root or the service ENOENTs at startup. Cloud-neutral, so both the
+# abs and s3 overlays reuse it.
+DBSLIM_DATA_DIR_OVERLAY = {
     "index-builder": {
         "pinecone": {
             "workload": {
@@ -200,9 +207,27 @@ def build_abs_values(inp):
         # global.* is the only tree the db-slim + nexus subcharts read (see the chart
         # comment on blob.*); mirror it there too.
         "global": {"blob": {"provider": "abs", "abs": dict(abs_block)}},
-        "db-slim": DBSLIM_ABS_OVERLAY,
+        "db-slim": DBSLIM_DATA_DIR_OVERLAY,
         # pc-blob picks its driver from cloud.provider, not the blob backend.
         "nexus": {"config": {"cloud": {"provider": "azure"}, "storage": {"localRoot": ""}}},
+    }
+
+
+def build_s3_values(inp):
+    region = req(inp, "storage.region")
+    # The chart derives the seven bucket names from the stem and the IRSA SA annotation from
+    # roleArn (charts/nexus/templates/_helpers.tpl), so nothing here is hand-listed per store.
+    s3_block = {
+        "bucketPrefix": req(inp, "storage.bucketPrefix"),
+        "region": region,
+        "roleArn": req(inp, "storage.roleArn"),
+    }
+    blob = {"provider": "s3", "s3": dict(s3_block)}
+    return {
+        "blob": blob,
+        "global": {"blob": {"provider": "s3", "s3": dict(s3_block)}},
+        "db-slim": DBSLIM_DATA_DIR_OVERLAY,
+        "nexus": {"config": {"cloud": {"provider": "aws", "region": region}, "storage": {"localRoot": ""}}},
     }
 
 
@@ -285,7 +310,7 @@ def build_self_hosted_values(inp, dim):
 def build_inputs_env(inp, dim, outdir):
     """Non-secret scalars install.sh / image-manifest.sh / create-secrets.sh consume."""
     idx_id = req(inp, "staticIndex.id")
-    auth = opt(inp, "storage.auth", "shared_key")
+    provider = storage_provider(inp)
     baked_dim = int(req(inp, "bundle.bakedDimension"))
     baked_id = req(inp, "bundle.bakedIndexId")
     # Path decision: OCI cannot override the baked data-plane dimension or index id.
@@ -299,13 +324,6 @@ def build_inputs_env(inp, dim, outdir):
         "PULL_SECRET_NAME": opt(inp, "registry.pullSecretName", "acr-pull"),
         "BUNDLE_TAG": str(req(inp, "bundle.tag")),
         "CHART_VERSION": f"0.0.0-bundle.{req(inp, 'bundle.tag')}",
-        "STORAGE_ACCOUNT": req(inp, "storage.account"),
-        "CONTAINER_PREFIX": req(inp, "storage.containerPrefix"),
-        "CONTAINER_NAMES": " ".join(container_names(req(inp, "storage.containerPrefix"))),
-        "STORAGE_AUTH": auth,
-        "STORAGE_EXISTING_SECRET": opt(inp, "storage.existingSecret", ""),
-        "STORAGE_KEY_ENV": opt(inp, "storage.storageKeyEnv", ""),
-        "WI_CLIENT_ID": opt(inp, "storage.clientId", ""),
         "LLM_KEY_ENV": req(inp, "inference.llmKeyEnv"),
         "EMBEDDING_KEY_ENV": req(inp, "inference.embeddingKeyEnv"),
         "RERANK_KEY_ENV": req(inp, "inference.rerankKeyEnv"),
@@ -320,6 +338,27 @@ def build_inputs_env(inp, dim, outdir):
         "NAMESPACE": "nexus",
         "RELEASE": "nexus",
     }
+
+    # STORAGE_VALUES names the storage overlay install.sh feeds to helm; STORAGE_AUTH gates
+    # whether create-secrets.sh makes a key Secret (only shared_key does — s3/IRSA is keyless).
+    env["STORAGE_PROVIDER"] = provider
+    if provider == "abs":
+        env["STORAGE_VALUES"] = "values.abs.yaml"
+        env["STORAGE_ACCOUNT"] = req(inp, "storage.account")
+        env["CONTAINER_PREFIX"] = req(inp, "storage.containerPrefix")
+        env["CONTAINER_NAMES"] = " ".join(container_names(req(inp, "storage.containerPrefix")))
+        env["STORAGE_AUTH"] = opt(inp, "storage.auth", "shared_key")
+        env["STORAGE_EXISTING_SECRET"] = opt(inp, "storage.existingSecret", "")
+        env["STORAGE_KEY_ENV"] = opt(inp, "storage.storageKeyEnv", "")
+        env["WI_CLIENT_ID"] = opt(inp, "storage.clientId", "")
+    else:
+        env["STORAGE_VALUES"] = "values.s3.yaml"
+        env["STORAGE_AUTH"] = "irsa"
+        env["STORAGE_EXISTING_SECRET"] = ""
+        env["BUCKET_PREFIX"] = req(inp, "storage.bucketPrefix")
+        env["BLOB_REGION"] = req(inp, "storage.region")
+        env["IRSA_ROLE_ARN"] = req(inp, "storage.roleArn")
+
     path = os.path.join(outdir, "inputs.env")
     with open(path, "w", encoding="utf-8") as f:
         f.write("# GENERATED by gen-values.py — non-secret scalars for the shell tools.\n")
@@ -349,12 +388,20 @@ def main():
         "# GENERATED by gen-values.py — top-level overrides the OCI chart's values.yaml\n"
         "# cannot carry (staticIndex, global.image, ingress, nexus.config index/embed).\n",
     )
-    dump(
-        build_abs_values(inp),
-        os.path.join(args.outdir, "values.abs.yaml"),
-        "# GENERATED by gen-values.py — Azure Blob overlay (blob.* + global.blob.* +\n"
-        "# db-slim data-dir + nexus cloud=azure).\n",
-    )
+    if storage_provider(inp) == "s3":
+        dump(
+            build_s3_values(inp),
+            os.path.join(args.outdir, "values.s3.yaml"),
+            "# GENERATED by gen-values.py — AWS S3 overlay (blob.* + global.blob.* +\n"
+            "# db-slim data-dir + nexus cloud=aws + IRSA SA annotation).\n",
+        )
+    else:
+        dump(
+            build_abs_values(inp),
+            os.path.join(args.outdir, "values.abs.yaml"),
+            "# GENERATED by gen-values.py — Azure Blob overlay (blob.* + global.blob.* +\n"
+            "# db-slim data-dir + nexus cloud=azure).\n",
+        )
     dump(
         build_self_hosted_values(inp, dim),
         os.path.join(args.outdir, "values.self-hosted.yaml"),

@@ -56,7 +56,7 @@ if [ "$STORAGE_AUTH" = "shared_key" ]; then
     --dry-run=client -o yaml | apply_stdin "secret/$STORAGE_EXISTING_SECRET (storage key)"
   unset STORAGE_KEY
 else
-  log "auth=workload_identity — no storage-key Secret needed (keyless blob access)"
+  log "auth=$STORAGE_AUTH — no storage-key Secret needed (keyless blob access)"
 fi
 
 log "secrets step complete."

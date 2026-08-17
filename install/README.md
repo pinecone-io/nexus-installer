@@ -21,13 +21,13 @@ touching nothing.
 | File | What it does |
 |------|--------------|
 | `customer.example.yaml` | The inputs contract. Copy to `customer.yaml` and fill it in. Every field maps one-to-one to what it configures. **Secrets are env-var names, never literals.** |
-| `gen-values.py` | Reads the inputs and emits the Helm overlays (`values.install.yaml`, `values.abs.yaml`, `values.self-hosted.yaml`) + `inputs.env`. Deterministic, secret-free. |
-| `preflight.py` | Validates the consistency invariants. Static by default (values only, no cloud); `--live` adds cluster/Azure checks. **This is the core value.** |
+| `gen-values.py` | Reads the inputs and emits the Helm overlays (`values.install.yaml`, the storage overlay `values.abs.yaml` or `values.s3.yaml`, `values.self-hosted.yaml`) + `inputs.env`. Deterministic, secret-free. |
+| `preflight.py` | Validates the consistency invariants. Static by default (values only, no cloud); `--live` adds cluster/cloud checks. **This is the core value.** |
 | `create-secrets.sh` | Idempotently creates the namespace, the registry pull Secret, and (shared-key only) the storage-key Secret, from env-var references. Never echoes a value. |
 | `install.sh` | Orchestrates preflight → secrets → `helm install`. `--dry-run` renders the full plan without touching anything. |
 | `image-manifest.sh` | Prints the exact images + OCI chart the install pulls (writes `generated/manifest.txt`), which `preflight --live` then verifies. Copies nothing — staging them in your registry is your pipeline's job. |
 | `remint-dbslim.sh` | Local-chart helper for a non-default embedding dimension / fresh index id (see "OCI vs local-chart path"). |
-| `tf-to-inputs.sh` | Emits the storage/identity half of `customer.yaml` from the `aks-slim` Terraform outputs. |
+| `tf-to-inputs.sh` | Emits the storage/identity half of `customer.yaml` from the `aks-slim` or `eks-slim` Terraform outputs (provider auto-detected). |
 | `support-bundle.sh` | Collects a redacted diagnostic archive to send to Pinecone when something goes wrong (see "Getting support"). |
 | `redact.py` | The redaction pass `support-bundle.sh` runs over everything it collects. |
 
@@ -195,17 +195,19 @@ automatically.
 
 ## Terraform hand-off (greenfield)
 
-If you provisioned the cluster with `terraform/aks-slim`, its outputs fill the
-storage/identity inputs for you:
+If you provisioned the cluster with `terraform/aks-slim` (Azure) or `terraform/eks-slim`
+(AWS), its outputs fill the storage/identity inputs for you:
 
 ```bash
-./tf-to-inputs.sh                 # prints a YAML fragment; merge it into customer.yaml
+./tf-to-inputs.sh                       # Azure (default TF dir ../terraform/aks-slim)
+./tf-to-inputs.sh ../terraform/eks-slim # AWS
 ```
 
-Mapping: `blob_storage_account → storage.account`, `blob_container →
-storage.containerPrefix`, `workload_identity_client_id → storage.clientId` (and it
-defaults `storage.auth: workload_identity`, since the module wires keyless federation),
-`cluster_name → kubeContext`.
+The provider is auto-detected from the outputs. Azure maps `blob_storage_account →
+storage.account`, `blob_container → storage.containerPrefix`, `workload_identity_client_id
+→ storage.clientId` (defaulting `storage.auth: workload_identity`). AWS maps `bucket_prefix →
+storage.bucketPrefix`, `irsa_role_arn → storage.roleArn`, `region → storage.region` (with
+`storage.provider: s3`). Both map `cluster_name → kubeContext`.
 
 ## Where Pinecone takes over (hand-off points)
 

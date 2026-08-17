@@ -1,0 +1,42 @@
+# Copy to terraform.tfvars and adjust. terraform.tfvars is gitignored.
+# Credentials come from the environment (AWS_PROFILE / AWS_ACCESS_KEY_ID, ...).
+
+region = "us-east-1"
+
+# Naming: resources are <type>-<name_prefix>-<environment>, e.g. eks-nexus-slim-dev.
+# Change environment to stand up another instance (staging/prod) from the same module.
+name_prefix = "nexus-slim"
+environment = "dev"
+
+# Pinned to the customer's target minor; EKS selects the patch.
+kubernetes_version = "1.31"
+
+node_count         = 2
+node_instance_type = "m6i.2xlarge"
+
+# Networking: the VPC CNI assigns pod IPs from the node subnet, so private subnets are /20
+# per AZ across >= 2 AZs. Prefix delegation raises pods-per-node further.
+vpc_cidr                 = "10.224.0.0/16"
+az_count                 = 2
+enable_prefix_delegation = true
+
+# Storage + IRSA (set enable_storage_identity = false to bring your own buckets + role).
+enable_storage_identity = true
+# Stem the seven bucket names derive from: <stem>-db plus six <stem>-nexus-* (source,
+# knowledge, archive, traces, snapshots, library); a random suffix is appended for S3
+# global uniqueness. Supply only the stem. Null -> <name_prefix>-<environment>.
+blob_prefix = "acme"
+
+# IRSA trust is automatic — the module trusts every blob-accessing SA the chart runs.
+# Set nothing for a standard install.
+#
+# helm_release_name = "nexus"   # release name you `helm install` with
+# helm_namespace    = "nexus"   # namespace the chart installs into
+#
+# Extra (non-standard) SAs only, appended to the derived set:
+# workload_service_accounts = [
+#   { namespace = "nexus", service_account = "my-extra-sa" },
+# ]
+
+# Optional ALB ingress. Off -> validate with `kubectl port-forward svc/nexus-gateway 80:80`.
+# enable_load_balancer_controller = false
