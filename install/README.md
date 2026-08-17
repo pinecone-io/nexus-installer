@@ -86,6 +86,12 @@ export NEXUS_STORAGE_KEY=...               # storage.storageKeyEnv (shared_key o
 export NEXUS_LLM_KEY=...                   # inference.llmKeyEnv / embeddingKeyEnv
 export NEXUS_RERANK_KEY=...                # inference.rerankKeyEnv
 
+# Gateway path only (inference.gateway set) — these replace the chat/embedding key above,
+# not the rerank key:
+export NEXUS_GATEWAY_CLIENT_ID=...         # inference.gateway.clientIdEnv
+export NEXUS_GATEWAY_CLIENT_SECRET=...     # inference.gateway.clientSecretEnv
+export NEXUS_GATEWAY_SUBSCRIPTION_KEY=...  # inference.gateway.subscriptionKeyEnv (if your gateway needs one)
+
 # 1. Generate overlays + validate (no cluster access needed):
 python3 gen-values.py
 python3 preflight.py                       # static invariants; fix any FAIL before continuing
@@ -103,6 +109,7 @@ helm registry login <registry.base host>                    # your registry
 
 # 4. Optional live checks (containers, image presence, identity in the cloud):
 python3 preflight.py --live
+python3 preflight.py --live-gateway        # gateway path only — run it before installing
 
 # 5. Dry-run the whole plan (touches nothing), then install (helm pulls the chart from
 #    your registry, using the login from step 2):
@@ -110,9 +117,9 @@ python3 preflight.py --live
 ./install.sh                               # non-interactive / CI: add --yes to skip the confirm prompt
 ```
 
-`install.sh` regenerates the overlays and re-runs the static preflight itself, so
-steps 1–4 are optional before step 5 — they're there so you can inspect the artifacts
-and confirm your registry first.
+`install.sh` regenerates the overlays and re-runs the static preflight itself (never the
+live checks), so steps 1–4 are optional before step 5 — they're there so you can inspect
+the artifacts and confirm your registry first.
 
 ## Verify the install
 
@@ -164,6 +171,34 @@ configures. The important ones:
 Secrets never appear here. A `*Env` field names the environment variable that holds the
 secret; the tools read it from your shell and never log it.
 
+## Chat + embedding through an API gateway (optional)
+
+If your model provider has key auth disabled and no public network path, chat and embedding
+can go through your internal API-management front door instead. Leave `inference.gateway`
+out and nothing changes: both go straight to the provider with a static key. To turn it on,
+uncomment the `gateway:` block your `customer.yaml` already carries and:
+
+- `inference.endpoint` becomes the **gateway base — the part before
+  `/deployments/<deployment>`**, which the generator appends itself. This is the one value to
+  get right; a base that already spells out the deployment path 404s.
+- `inference.llmKeyEnv` / `embeddingKeyEnv` are unused on this path. You supply the OAuth2
+  client id and secret (`gateway.clientIdEnv` / `clientSecretEnv`) and, if your gateway
+  requires one, its subscription key (`gateway.subscriptionKeyEnv`). The short-lived bearer
+  token is minted and refreshed by the inference proxy — you never supply a token.
+- **Rerank is unaffected**: it keeps `inference.rerankEndpoint` + `rerankKeyEnv` and its own
+  static key.
+- Set `inference.contextWindow` / `inference.maxOutputTokens` — this path does not introspect
+  the deployment's limits. The defaults suit a gpt-5-class deployment and must not exceed what
+  yours allows.
+- The inference proxy needs egress to `gateway.tokenUrl` (the authorization server) as well as
+  to the gateway itself: a separate firewall/DNS allowance from the model endpoints.
+
+Validate the credentials before installing with `python3 preflight.py --live-gateway`
+(`install.sh` runs only the static preflight). It mints a token and makes one 1-token chat
+completion through the gateway, reading the client id/secret (and subscription key) from the
+same shell. A wrong secret, an unauthorized scope, or the wrong gateway environment fails here
+in seconds instead of partway through the install.
+
 ## What preflight checks
 
 Static (values only, always safe):
@@ -172,8 +207,9 @@ Static (values only, always safe):
   appears; and if it (or the index id) differs from the bundle's baked value, it fails
   for the OCI path with the reason and the fix (see below).
 - **Container prefix** — the seven containers derive from the stem.
-- **Inference catalog** — the self-hosted profile is selected, every `api_key_ref` has a
-  `providerKeys` entry, and all tier slots resolve to a defined catalog entry.
+- **Inference catalog** — the self-hosted profile is selected, every credential ref (key,
+  gateway client, subscription key) has a `providerKeys` entry, and all tier slots resolve
+  to a defined catalog entry.
 - **Registry** — the image override is set and the pull-secret server matches the base.
 - **Storage auth** — `workload_identity` has a `clientId`; `shared_key` has an
   `existingSecret`.
@@ -183,6 +219,9 @@ Live (`--live`, opt-in, needs `az`/`kubectl` + the `azure.*` inputs):
 - the kube context is reachable, the seven containers exist, every bundle image is
   present in your mirror at the expected tag, and (workload identity) a federated
   credential covers the release service account.
+
+Live gateway (`--live-gateway`, opt-in, makes real HTTP calls): mints a token and makes one
+1-token chat completion through the gateway — see above.
 
 ## OCI vs local-chart path
 
