@@ -529,6 +529,7 @@ def check_live(inp):
 
     section("LIVE: mirrored images")
     # tags come from the render (manifest.txt); the chart can bake a tag other than bundle.tag
+    sub = get(inp, "azure.subscription", "")  # ACR tag-list check is Azure-only; absent on the S3/ECR path
     acr = get(inp, "registry.server", "")
     acr_name = acr.split(".")[0] if acr else ""
     is_acr = acr.endswith(".azurecr.io")
@@ -555,9 +556,8 @@ def check_live(inp):
             _acr_tag_check(acr_name, sub, repo, tag)
 
     if storage_provider(inp) == "s3":
-        section("LIVE: IRSA")
-        warn("SA role-arn annotations become checkable only after the chart is installed; "
-             "re-run `preflight.py --live` against the running cluster to verify coverage.")
+        section("LIVE: IRSA trust")
+        _check_irsa_trust(inp)
     else:
         section("LIVE: workload identity federated credentials")
         auth = get(inp, "storage.auth", "shared_key")
@@ -606,6 +606,49 @@ def _live_s3_buckets(inp):
         (ok if rc == 0 else fail)(
             f"bucket {name} {'present' if rc == 0 else 'MISSING or not accessible'}"
         )
+
+
+def _check_irsa_trust(inp):
+    # Pre-install analog of _check_federation: the IAM role terraform created must federate
+    # every blob-accessing SA subject, or its pods get AccessDenied on S3. The chart annotates
+    # the SAs from roleArn at install, so a covered trust policy is what makes those work.
+    role_arn = get(inp, "storage.roleArn", "")
+    ns = "nexus"
+    if ":role/" not in role_arn:
+        warn("storage.roleArn is not an IAM role ARN — skipping IRSA trust coverage")
+        return
+    role_name = role_arn.split(":role/", 1)[1]
+    rc, out = run([
+        "aws", "iam", "get-role", "--role-name", role_name,
+        "--query", "Role.AssumeRolePolicyDocument", "--output", "json",
+    ])
+    if rc != 0:
+        warn(f"could not read IAM role '{role_name}': {out.splitlines()[0] if out else 'aws error'}")
+        return
+    try:
+        doc = json.loads(out)
+    except json.JSONDecodeError:
+        warn(f"could not parse the trust policy of '{role_name}'")
+        return
+
+    # Collect every federated subject the trust policy allows (the "<oidc>:sub" conditions).
+    subjects = set()
+    for stmt in doc.get("Statement", []):
+        for op_values in (stmt.get("Condition") or {}).values():
+            for key, val in op_values.items():
+                if key.endswith(":sub"):
+                    subjects.update(val if isinstance(val, list) else [val])
+
+    missing = False
+    for sa in BLOB_SERVICE_ACCOUNTS:
+        subject = f"system:serviceaccount:{ns}:{sa}"
+        if subject in subjects:
+            ok(f"role trusts {sa}")
+        else:
+            fail(f"role '{role_name}' trust policy does not federate {sa} (subject '{subject}') — its pods will get AccessDenied on S3")
+            missing = True
+    if not missing:
+        ok(f"all {len(BLOB_SERVICE_ACCOUNTS)} blob-accessing SAs federated on role '{role_name}'")
 
 
 def _acr_tag_check(acr_name, sub, repository, tag):
