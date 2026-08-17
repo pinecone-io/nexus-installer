@@ -25,7 +25,7 @@ touching nothing.
 | `preflight.py` | Validates the consistency invariants. Static by default (values only, no cloud); `--live` adds cluster/cloud checks. **This is the core value.** |
 | `create-secrets.sh` | Idempotently creates the namespace, the registry pull Secret, and (shared-key only) the storage-key Secret, from env-var references. Never echoes a value. |
 | `install.sh` | Orchestrates preflight → secrets → `helm install`. `--dry-run` renders the full plan without touching anything. |
-| `image-manifest.sh` | Prints the exact images + OCI chart the install pulls (writes `generated/manifest.txt`), which `preflight --live` then verifies. Copies nothing — staging them in your registry is your pipeline's job. |
+| `image-manifest.sh` | Prints the exact images + OCI chart the install pulls (writes `generated/manifest.txt`), which `preflight --live` then verifies. `--copy` mirrors the bundle into your registry from a source Pinecone grants you. |
 | `remint-dbslim.sh` | Local-chart helper for a non-default embedding dimension / fresh index id (see "OCI vs local-chart path"). |
 | `tf-to-inputs.sh` | Emits the storage/identity half of `customer.yaml` from the `aks-slim` or `eks-slim` Terraform outputs (provider auto-detected). |
 | `support-bundle.sh` | Collects a redacted diagnostic archive to send to Pinecone when something goes wrong (see "Getting support"). |
@@ -41,10 +41,14 @@ Before running anything:
 - **A cluster.** Kubernetes 1.35, ≥ 2 amd64 nodes, a default StorageClass, and node
   egress to your registry, storage account, and model endpoints. Greenfield? The
   optional `terraform/aks-slim` module in this repo stands up a conforming AKS cluster.
-- **The bundle in your registry.** Pinecone stages the images + OCI chart under one base
-  path (`registry.base`) in your ACR/Artifactory. Log in once (`helm registry login
-  <registry.server>`) so `helm` can pull the chart; `create-secrets.sh` makes the pull
-  Secret (`registry.passwordEnv`) so nodes pull the images.
+- **The bundle in your registry — mirrored ahead of time.** The stack pulls every image
+  and the OCI chart from one base path (`registry.base`) in your own registry
+  (ACR/ECR/Artifactory) and never reaches Pinecone at install time. Getting the bundle
+  there is a one-time mirror you **arrange with Pinecone in advance**: Pinecone grants your
+  identity read access to its source registry, and you copy the bundle across — with the
+  optional `image-manifest.sh --copy` step in Quick start, or your own pipeline. Log in
+  once (`helm registry login <registry.server>`) so `helm` can pull the chart;
+  `create-secrets.sh` makes the pull Secret (`registry.passwordEnv`) so nodes pull the images.
 - **Azure Blob storage.** One StorageV2 account and its **seven containers** (the stack
   does not create them). The optional `terraform/aks-slim` module provisions them for
   you; otherwise create them before install. Names derive from your stem: `<stem>-db`
@@ -79,25 +83,28 @@ export NEXUS_RERANK_KEY=...                # inference.rerankKeyEnv
 python3 gen-values.py
 python3 preflight.py                       # static invariants; fix any FAIL before continuing
 
-# 2. List the exact images + chart the install pulls. image-manifest derives the list
-#    from the chart render (the chart bakes the tags), so it pulls the OCI chart from
-#    your own registry (registry.base) — the same chart install.sh uses, no route to
-#    Pinecone needed. Log in to your registry first (or reuse the login from step 4).
-#    Pass --chart-path <dir> to render a local checkout instead of pulling:
+# 2. Verify what's staged: list the exact images + chart the install pulls (writes
+#    generated/manifest.txt, which preflight --live verifies). It reads the chart from your
+#    registry, so a failure here means the bundle isn't staged yet — mirror it in step 3:
 helm registry login <registry.base host>                    # your registry
 ./image-manifest.sh --list
 
-# 3. Optional live checks (containers, image presence, identity in the cloud):
+# 3. (Optional) Not staged? Mirror the bundle from Pinecone's registry into your own —
+#    one-time; arrange source access with Pinecone first (`--help` covers auth). Then re-run
+#    step 2 to confirm it now resolves from your registry:
+./image-manifest.sh --copy --source <Pinecone source registry> --chart-path /path/to/chart
+
+# 4. Optional live checks (containers, image presence, identity in the cloud):
 python3 preflight.py --live
 
-# 4. Dry-run the whole plan (touches nothing), then install (helm pulls the chart from
+# 5. Dry-run the whole plan (touches nothing), then install (helm pulls the chart from
 #    your registry, using the login from step 2):
 ./install.sh --dry-run
 ./install.sh                               # non-interactive / CI: add --yes to skip the confirm prompt
 ```
 
 `install.sh` regenerates the overlays and re-runs the static preflight itself, so
-steps 1–3 are optional before step 4 — they're there so you can inspect the artifacts
+steps 1–4 are optional before step 5 — they're there so you can inspect the artifacts
 and confirm your registry first.
 
 ## Verify the install
@@ -259,10 +266,9 @@ locally for you to send.
   credentials to `.secrets.env` (0600) and reuses them, so re-installs keep stable
   credentials — the session credential is your API login; keep the file safe.
 - **Idempotent.** `create-secrets.sh` and the mirror are safe to re-run.
-- **Mirroring the bundle (operator-only).** Staging the bundle into `registry.base` from
-  Pinecone's distribution registry is a one-time step done by whoever has access to that
-  source — it is not part of a customer install, which reads only from `registry.base`.
-  For that step, `./image-manifest.sh --list --source` adds a "copy FROM" column mapping
-  each dest ref to Pinecone's registry (pass `--source <registry>` to override the source).
+- **Mirroring the bundle.** Staging the bundle into `registry.base` is a one-time step you
+  arrange with Pinecone ahead of time — they grant your identity read on their source
+  registry, then you copy the bundle across with `./image-manifest.sh --copy` (or your own
+  pipeline). `--list --source <registry>` previews the `dest <- FROM` mapping without copying.
 - Expect ~20 helm client warnings like `hides previous definition of …` during install
   — they are by design and harmless.
