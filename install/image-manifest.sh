@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Print the images + OCI chart the install pulls, so you can confirm they are staged
-# in your registry (this copies nothing — staging is your pipeline's job). Writes
-# generated/manifest.txt, which preflight.py --live verifies.
+# Print — and optionally mirror — the images + OCI chart the install pulls. `--list`
+# (default) writes generated/manifest.txt (which preflight.py --live verifies) and copies
+# nothing. `--copy` stages the whole bundle FROM the --source registry INTO your
+# registry.base, so the auth + create-repo + crane-copy loop you'd otherwise hand-write is
+# one flag.
 #
 # The image list, with tags, comes from the chart render: `helm template` is the source of
 # truth for what the install pulls. With --chart-path DIR it renders that local checkout;
@@ -10,32 +12,40 @@
 # (`helm registry login <registry.base host>` first if you are not already logged in).
 #
 # By default the output lists the DEST refs (<registry.base>/<name>:<tag>) you must have
-# present — the customer's need is "confirm these are staged". Mirroring the bundle FROM
-# Pinecone is a separate, operator-only step: pass --source [REGISTRY] to add the "copy
-# FROM" column (bare --source uses Pinecone's distribution registry).
+# present — "confirm these are staged". `--source REGISTRY` adds the "copy FROM" column.
 #
-# Usage: ./image-manifest.sh [--list] [--chart-path DIR] [--source [REGISTRY]]
+# --copy mirrors the whole bundle FROM --source INTO registry.base (--source required).
+# Engine auto-detects crane|skopeo; --engine to force. Log in to both registries first —
+# this tool never reads a key:
+#     gcloud auth print-access-token | crane auth login <source-host> -u oauth2accesstoken --password-stdin
+#     aws ecr get-login-password     | crane auth login <registry.base host> -u AWS --password-stdin
+#
+# Usage: ./image-manifest.sh [--list] [--copy] [--engine crane|skopeo] [--chart-path DIR] [--source REGISTRY]
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-# Pinecone's distribution registry — the only meaningful --source for the mirror step.
-# Used only when --source is passed with no explicit registry.
-PINECONE_SOURCE="us-docker.pkg.dev/pinecone-artifacts/nexus"
-
 CHART_PATH=""
 SOURCE=""
+COPY=0
+ENGINE=""   # empty = auto-detect (crane, else skopeo); --engine overrides
 while [ $# -gt 0 ]; do
   case "$1" in
     --list) : ;;
+    --copy) COPY=1 ;;
+    --engine) ENGINE="$2"; shift ;;
     --chart-path) CHART_PATH="$2"; shift ;;
-    # Optional registry argument: a bare --source defaults to Pinecone's source.
     --source)
-      if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then SOURCE="$2"; shift; else SOURCE="$PINECONE_SOURCE"; fi ;;
+      { [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; } || die "--source needs a <registry> argument"
+      SOURCE="$2"; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
   shift
 done
+
+if [ "$COPY" -eq 1 ] && [ -z "$SOURCE" ]; then
+  die "--copy requires --source <registry>"
+fi
 
 load_inputs_env
 need helm
@@ -45,11 +55,14 @@ need helm
 # raises the cap for a slow link. Uses gtimeout where coreutils is prefixed (macOS);
 # runs unbounded only if neither timeout binary is installed.
 PULL_TIMEOUT="${PULL_TIMEOUT:-180}"
-run_bounded() {
-  if command -v timeout >/dev/null 2>&1; then timeout "$PULL_TIMEOUT" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$PULL_TIMEOUT" "$@"
+COPY_TIMEOUT="${COPY_TIMEOUT:-600}"
+bounded() {
+  local t="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$t" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$t" "$@"
   else "$@"; fi
 }
+run_bounded() { bounded "$PULL_TIMEOUT" "$@"; }
 
 # The chart is pulled from registry.base — the same single artifact install.sh installs
 # from — so a customer never needs a route to Pinecone's registry. helm authenticates to
@@ -68,6 +81,9 @@ PULL_TMP=""
 # return 0 so an empty PULL_TMP (the --chart-path case) does not become the exit status.
 cleanup() { [ -n "$PULL_TMP" ] && rm -rf "$PULL_TMP"; return 0; }
 trap cleanup EXIT
+# A copy runs inside an `if`, where bash swallows SIGINT; trap it so Ctrl+C stops the run
+# instead of falling through to the next artifact.
+trap 'echo >&2; exit 130' INT TERM
 
 if [ -z "$CHART_PATH" ]; then
   PULL_TMP="$(mktemp -d)"
@@ -129,11 +145,14 @@ emit() {
   echo "$1" >> "$MANIFEST"
 }
 
-while IFS= read -r nt; do
-  emit "$REGISTRY_BASE/$nt" "$nt"
-done < <(render_refs)
+# Read loop, not mapfile, to stay bash 3.2-safe (macOS). The chart artifact rides along.
+REFS=()
+while IFS= read -r nt; do [ -n "$nt" ] && REFS+=("$nt"); done < <(render_refs)
+REFS+=("nexus-installer:$CHART_VERSION")
 
-emit "$REGISTRY_BASE/nexus-installer:$CHART_VERSION" "nexus-installer:$CHART_VERSION"
+for nt in "${REFS[@]}"; do
+  emit "$REGISTRY_BASE/$nt" "$nt"
+done
 
 if [ -n "$SOURCE" ]; then
   echo
@@ -143,3 +162,77 @@ if [ -n "$SOURCE" ]; then
 fi
 echo
 echo "# wrote $MANIFEST  (preflight.py --live verifies it)"
+
+# --- mirror (--copy) ---
+ecr_region_from_host() { printf '%s\n' "$1" | sed -nE 's/^[^.]+\.dkr\.ecr\.([^.]+)\.amazonaws\.com$/\1/p'; }
+
+ensure_dest_repo() {
+  # ECR has no push-time repo autocreate; make it if absent. Other registries no-op.
+  local host="$1" repo="$2" region
+  case "$host" in
+    *.dkr.ecr.*.amazonaws.com)
+      command -v aws >/dev/null 2>&1 || {
+        warn "aws not found — skipping ECR repo autocreate; crane copy will fail if a repo is absent"; return 0; }
+      region="$(ecr_region_from_host "$host")"
+      [ -n "$region" ] || { warn "could not parse an ECR region from $host — skipping repo autocreate"; return 0; }
+      if aws ecr describe-repositories --region "$region" --repository-names "$repo" >/dev/null 2>&1; then
+        return 0
+      fi
+      log "creating ECR repository $repo ($region)"
+      aws ecr create-repository --region "$region" --repository-name "$repo" >/dev/null 2>&1 \
+        || warn "could not create ECR repository $repo — assuming it exists or you lack ecr:CreateRepository"
+      ;;
+  esac
+  return 0
+}
+
+resolve_engine() {
+  case "$ENGINE" in
+    crane|skopeo) need "$ENGINE"; return ;;
+    "") : ;;
+    *) die "unknown --engine '$ENGINE' (want: crane | skopeo)" ;;
+  esac
+  if command -v crane >/dev/null 2>&1; then ENGINE=crane
+  elif command -v skopeo >/dev/null 2>&1; then ENGINE=skopeo
+  else die "no image-copy engine found — install crane (github.com/google/go-containerregistry) \
+or skopeo (github.com/containers/skopeo), or pass --engine"; fi
+}
+
+# skopeo needs the docker:// transport prefix; crane takes the bare ref.
+copy_ref() {
+  case "$ENGINE" in
+    crane)  bounded "$COPY_TIMEOUT" crane  copy "$1" "$2" ;;
+    # --all copies the whole manifest list; without it skopeo copies only the host platform
+    # and fails on a Mac for these linux images (crane copies the full index by default).
+    skopeo) bounded "$COPY_TIMEOUT" skopeo copy --all "docker://$1" "docker://$2" ;;
+  esac
+}
+
+mirror_bundle() {
+  resolve_engine
+  local host="${REGISTRY_BASE%%/*}"
+  local base_path=""; case "$REGISTRY_BASE" in */*) base_path="${REGISTRY_BASE#*/}" ;; esac
+  local total="${#REFS[@]}" n=0 name repo login="$ENGINE login"
+  [ "$ENGINE" = crane ] && login="crane auth login"
+  echo
+  log "mirroring $total artifacts: $SOURCE  ->  $REGISTRY_BASE  ($ENGINE copy; idempotent)"
+  for nt in "${REFS[@]}"; do
+    n=$((n + 1))
+    name="${nt%%:*}"
+    if [ -n "$base_path" ]; then repo="$base_path/$name"; else repo="$name"; fi
+    ensure_dest_repo "$host" "$repo"
+    log "[$n/$total] $nt"
+    copy_ref "$SOURCE/$nt" "$REGISTRY_BASE/$nt" && continue
+    # Stop at the first failure instead of repeating it 15 more times: it is almost always
+    # a missing login, and re-running is idempotent so nothing is lost.
+    warn "copy FAILED: $nt (error above)"
+    die "stopped at the first failure — usually $ENGINE is not logged in. Log in to BOTH, then re-run:
+      $login ${SOURCE%%/*}
+      $login $host
+    ACR: 'az acr login' updates Docker's keychain — crane reads it, skopeo does not; with skopeo run '$login $host'."
+  done
+  log "mirror complete: $total/$total artifacts staged in $REGISTRY_BASE"
+  log "verify: python3 $HERE/preflight.py --live"
+}
+
+[ "$COPY" -eq 1 ] && mirror_bundle
