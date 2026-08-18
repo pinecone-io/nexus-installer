@@ -71,7 +71,13 @@ Before running anything:
 ```bash
 cd install
 cp customer.example.yaml customer.yaml
-$EDITOR customer.yaml                      # fill in ~11 inputs; secrets are env-var NAMES
+
+# Optional — if you stood the cluster up with a terraform/*-slim module, prefill the
+# storage + kubeContext fields from its outputs (auto-detects the cloud), then merge the
+# printed fragment into customer.yaml. See "Terraform hand-off" below:
+./tf-to-inputs.sh ../terraform/gke-slim   # or ../terraform/aks-slim | ../terraform/eks-slim
+
+$EDITOR customer.yaml                      # fill in the remaining inputs; secrets are env-var NAMES
 
 # Export the secrets the inputs reference (names are your choice, set in customer.yaml):
 export NEXUS_REGISTRY_PASSWORD=...         # registry.passwordEnv
@@ -200,25 +206,47 @@ Making the data-plane dimension a runtime value is a prerequisite for a fully
 OCI-based install at the recommended embedding model; until then the toolkit falls back
 automatically.
 
-## Terraform hand-off (greenfield)
+## Terraform hand-off (greenfield) — optional
 
-If you provisioned the cluster with `terraform/aks-slim` (Azure), `terraform/eks-slim`
-(AWS), or `terraform/gke-slim` (GCP), its outputs fill the storage/identity inputs for you:
+If you stood the cluster up with one of the `terraform/*-slim` modules, you don't have to copy
+its storage and identity values into `customer.yaml` by hand. `tf-to-inputs.sh` reads the
+module's Terraform outputs and prints the matching `customer.yaml` fields — the `storage:` block
+and `kubeContext` — for you to merge in. It only prints to stdout; it never edits your file.
+
+Point it at the module you applied (the provider is auto-detected from the outputs; the default
+directory is `../terraform/aks-slim`, so bare `./tf-to-inputs.sh` covers Azure):
 
 ```bash
-./tf-to-inputs.sh                       # Azure (default TF dir ../terraform/aks-slim)
-./tf-to-inputs.sh ../terraform/eks-slim # AWS
-./tf-to-inputs.sh ../terraform/gke-slim # GCP
+./tf-to-inputs.sh ../terraform/aks-slim   # Azure
+./tf-to-inputs.sh ../terraform/eks-slim   # AWS
+./tf-to-inputs.sh ../terraform/gke-slim   # GCP
 ```
 
-The provider is auto-detected from the outputs. Azure maps `blob_storage_account →
-storage.account`, `blob_container → storage.containerPrefix`, `workload_identity_client_id
-→ storage.clientId` (defaulting `storage.auth: workload_identity`). AWS maps `bucket_prefix →
-storage.bucketPrefix`, `irsa_role_arn → storage.roleArn`, `region → storage.region` (with
-`storage.provider: s3`). GCP maps `bucket_prefix → storage.bucketPrefix`, `gsa_email →
-storage.serviceAccount`, `project → storage.project` (with `storage.provider: gcs`); GCS is
-keyless via GKE Workload Identity, so there is no region or key field. Azure/AWS map
-`cluster_name → kubeContext`; GCP uses the module's `kube_context` output.
+It emits a YAML fragment — for GKE, for example:
+
+```yaml
+# --- generated from gke-slim terraform outputs; merge into customer.yaml ---
+kubeContext: gke_my-project_us-central1_gke-nexus-slim-dev
+storage:
+  provider: gcs
+  bucketPrefix: nexus-slim-dev-ab12cd
+  serviceAccount: nexus-dev-blob@my-project.iam.gserviceaccount.com
+  project: my-project
+```
+
+Copy that `kubeContext` line and `storage:` block into your `customer.yaml`, replacing the
+example ones. This fills only the storage/identity half — you still fill `registry.*`,
+`inference.*`, `bundle.*`, and `embedding.*` yourself. `preflight.py` then cross-checks the
+merged result against the generated overlays, so a bad paste (e.g. a bucket prefix that doesn't
+match the buckets the module created) is caught before install.
+
+What each module fills:
+
+| Module | Fills into `customer.yaml` |
+|---|---|
+| `aks-slim` (Azure) | `storage.provider: abs`, `account`, `containerPrefix`, `auth: workload_identity`, `clientId`; `kubeContext` |
+| `eks-slim` (AWS) | `storage.provider: s3`, `bucketPrefix`, `region`, `roleArn`; `kubeContext` |
+| `gke-slim` (GCP) | `storage.provider: gcs`, `bucketPrefix`, `serviceAccount`, `project`; `kubeContext` (keyless via Workload Identity — no region or key field) |
 
 ## Where Pinecone takes over (hand-off points)
 
