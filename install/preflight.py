@@ -351,13 +351,30 @@ def check_inference(inp):
         fail(f"chat tiers incomplete — lite/standard/pro must all be set, got {chat_tiers}")
 
     # Naming guardrail — advisory, not fatal (customer may differ).
-    for field, name in {"embeddingDeployment": "text-embedding-3-small", "rerankDeployment": "rerank-v3.5"}.items():
-        val = get(inp, f"inference.{field}")
-        if val != name:
-            warn(
-                f"inference.{field}={val!r}: the router expects the deployment named "
-                f"{name!r} (it matches on the deployment name)."
-            )
+    embed_dep = get(inp, "inference.embeddingDeployment")
+    if embed_dep != "text-embedding-3-small":
+        warn(
+            f"inference.embeddingDeployment={embed_dep!r}: the recommended model is "
+            "'text-embedding-3-small'."
+        )
+    # Rerank: the proxy validates `<rerankProvider>/<rerankDeployment>` against LiteLLM's
+    # registry at startup, so flag combos LiteLLM likely won't map (it's not a fixed name).
+    rerank_dep = get(inp, "inference.rerankDeployment")
+    rerank_provider = get(inp, "inference.rerankProvider", "cohere")
+    if rerank_provider not in ("cohere", "azure_ai"):
+        fail(f"inference.rerankProvider must be 'cohere' or 'azure_ai', got {rerank_provider!r}")
+    elif rerank_provider == "cohere" and rerank_dep and not rerank_dep.startswith("rerank-v3"):
+        warn(
+            f"rerankProvider=cohere + rerankDeployment={rerank_dep!r} → model 'cohere/{rerank_dep}', "
+            "which LiteLLM may not map (proxy fails to start if not). Known-good: 'rerank-v3.5'; "
+            "for a newer reranker use rerankProvider=azure_ai (e.g. cohere-rerank-v4.0-fast)."
+        )
+    elif rerank_provider == "azure_ai" and rerank_dep and not rerank_dep.startswith("cohere-rerank-"):
+        warn(
+            f"rerankProvider=azure_ai + rerankDeployment={rerank_dep!r} → model 'azure_ai/{rerank_dep}'; "
+            "azure_ai expects LiteLLM's canonical name (e.g. cohere-rerank-v4.0-fast), which must "
+            "also be your Foundry deployment name."
+        )
 
 
 def check_registry(inp):

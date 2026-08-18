@@ -253,12 +253,39 @@ def build_gcs_values(inp):
     }
 
 
+def _azure_ai_rerank_url(endpoint):
+    # Pin /v2/rerank: litellm's azure_ai route defaults a bare base to the legacy
+    # /v1/rerank (its cohere route doesn't), so `.../providers/cohere` would hit v1.
+    base = endpoint.rstrip("/")
+    if base.endswith("/v1/rerank") or base.endswith("/v2/rerank"):
+        return base
+    if base.endswith("/v1") or base.endswith("/v2"):
+        return base + "/rerank"
+    return base + "/v2/rerank"
+
+
+def rerank_catalog_entry(provider, deployment, endpoint):
+    # (model, base_url) for the rerank entry. The proxy validates the model id at startup
+    # (litellm.get_model_info): `cohere/` only maps rerank-v3.5, so `azure_ai/` routes a
+    # newer reranker under litellm's canonical name. See customer.example.yaml for the
+    # rerankProvider/rerankDeployment naming rules.
+    if provider == "cohere":
+        return f"cohere/{deployment}", endpoint
+    if provider == "azure_ai":
+        return f"azure_ai/{deployment}", _azure_ai_rerank_url(endpoint)
+    die(f"inference.rerankProvider must be 'cohere' or 'azure_ai', got {provider!r}")
+
+
 def build_self_hosted_values(inp, dim):
     endpoint = req(inp, "inference.endpoint")
     rerank_endpoint = req(inp, "inference.rerankEndpoint")
     chat = req(inp, "inference.chatDeployment")
     embed = req(inp, "inference.embeddingDeployment")
     rerank = req(inp, "inference.rerankDeployment")
+    # Fallback-when-omitted stays cohere so a pre-existing customer.yaml (rerank-v3.5, no
+    # rerankProvider) is unchanged; customer.example.yaml recommends azure_ai for new installs.
+    rerank_provider = opt(inp, "inference.rerankProvider", "cohere")
+    rerank_model, rerank_base_url = rerank_catalog_entry(rerank_provider, rerank, rerank_endpoint)
 
     # the proxy requires each tier to resolve to a distinct model ref
     tier_labels = {"lite": "Chat (lite)", "standard": "Chat (standard)", "pro": "Chat (pro)"}
@@ -298,8 +325,8 @@ def build_self_hosted_values(inp, dim):
     rerank_models = {
         "rerank": {
             "api_style": "litellm",
-            "model": f"cohere/{rerank}",
-            "base_url": rerank_endpoint,
+            "model": rerank_model,
+            "base_url": rerank_base_url,
             "api_key_ref": RERANK_KEY_REF,
             "max_retries": 2,
             "max_query_chars": 1000,

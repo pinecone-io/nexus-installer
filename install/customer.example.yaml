@@ -93,16 +93,23 @@ storage:
   # project: my-gcp-project              # [YOURS]  GCP project holding the buckets + GSA -> blob.gcs.project
 
 # --- Model endpoints (OpenAI-compatible: Azure OpenAI + Azure AI Foundry) -----
-# You create the chat/embedding/rerank deployments, but their NAMES must be ones
-# the embedded routing library recognizes: chat `gpt-5`, embedding
-# `text-embedding-3-small`, rerank named literally `rerank-v3.5`. Keys are given as
-# env-var references and injected at install time via --set (never written to a values file).
+# The proxy validates every model id against LiteLLM's registry at startup, so each must
+# be one LiteLLM maps: chat `gpt-5`, embedding `text-embedding-3-small`, rerank
+# `<rerankProvider>/<rerankDeployment>` (below). Keys are env-var references injected via
+# --set at install (never written to a values file).
 inference:
   endpoint: https://acme-aoai.cognitiveservices.azure.com        # [YOURS]   chat + embedding base_url
   rerankEndpoint: https://acme-aoai.services.ai.azure.com/providers/cohere  # [YOURS] Foundry Cohere rerank base_url
   chatDeployment: gpt-5                  # [YOURS]   your deployment; name must be router-recognized (e.g. gpt-5)
   embeddingDeployment: text-embedding-3-small  # [YOURS] your deployment; recommended text-embedding-3-small
-  rerankDeployment: rerank-v3.5          # [YOURS]   your deployment; MUST be named literally rerank-v3.5
+  # rerankProvider picks the LiteLLM route; rerankDeployment must be BOTH a LiteLLM-mapped
+  # model id and your Foundry deployment name:
+  #   azure_ai [DEFAULT] model `azure_ai/<rerankDeployment>` — LiteLLM's canonical name
+  #            (cohere-rerank-v4.0-fast) runs the current Cohere reranker; base -> /v2/rerank.
+  #   cohere   alternative: model `cohere/<rerankDeployment>` — the older rerank-v3.5. A
+  #            newer name LiteLLM can't map (rerank-v4.0-fast) fails startup, so 4.x needs azure_ai.
+  rerankProvider: azure_ai               # [DEFAULT] azure_ai | cohere
+  rerankDeployment: cohere-rerank-v4.0-fast  # [YOURS] your Foundry deployment; must match rerankProvider (see above)
   llmKeyEnv: NEXUS_LLM_KEY               # [DEFAULT] env var name holding the chat key
   embeddingKeyEnv: NEXUS_LLM_KEY         # [DEFAULT] env var name holding the embedding key (often the same AOAI key)
   rerankKeyEnv: NEXUS_RERANK_KEY         # [DEFAULT] env var name holding the rerank key
