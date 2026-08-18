@@ -282,6 +282,8 @@ def build_self_hosted_values(inp, dim):
     chat = req(inp, "inference.chatDeployment")
     embed = req(inp, "inference.embeddingDeployment")
     rerank = req(inp, "inference.rerankDeployment")
+    # Fallback-when-omitted stays cohere so a pre-existing customer.yaml (rerank-v3.5, no
+    # rerankProvider) is unchanged; customer.example.yaml recommends azure_ai for new installs.
     rerank_provider = opt(inp, "inference.rerankProvider", "cohere")
     rerank_model, rerank_base_url = rerank_catalog_entry(rerank_provider, rerank, rerank_endpoint)
 

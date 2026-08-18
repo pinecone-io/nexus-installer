@@ -104,12 +104,12 @@ inference:
   embeddingDeployment: text-embedding-3-small  # [YOURS] your deployment; recommended text-embedding-3-small
   # rerankProvider picks the LiteLLM route; rerankDeployment must be BOTH a LiteLLM-mapped
   # model id and your Foundry deployment name:
-  #   cohere   [DEFAULT] model `cohere/<rerankDeployment>` — use rerank-v3.5. A newer name
-  #            LiteLLM can't map (rerank-v4.0-fast) fails proxy startup.
-  #   azure_ai model `azure_ai/<rerankDeployment>` — use LiteLLM's canonical name
-  #            (cohere-rerank-v4.0-fast) to run a newer reranker; base pinned to /v2/rerank.
-  rerankProvider: cohere                 # [DEFAULT] cohere | azure_ai
-  rerankDeployment: rerank-v3.5          # [YOURS]   your Foundry deployment; must match rerankProvider (see above)
+  #   azure_ai [DEFAULT] model `azure_ai/<rerankDeployment>` — LiteLLM's canonical name
+  #            (cohere-rerank-v4.0-fast) runs the current Cohere reranker; base -> /v2/rerank.
+  #   cohere   alternative: model `cohere/<rerankDeployment>` — the older rerank-v3.5. A
+  #            newer name LiteLLM can't map (rerank-v4.0-fast) fails startup, so 4.x needs azure_ai.
+  rerankProvider: azure_ai               # [DEFAULT] azure_ai | cohere
+  rerankDeployment: cohere-rerank-v4.0-fast  # [YOURS] your Foundry deployment; must match rerankProvider (see above)
   llmKeyEnv: NEXUS_LLM_KEY               # [DEFAULT] env var name holding the chat key
   embeddingKeyEnv: NEXUS_LLM_KEY         # [DEFAULT] env var name holding the embedding key (often the same AOAI key)
   rerankKeyEnv: NEXUS_RERANK_KEY         # [DEFAULT] env var name holding the rerank key

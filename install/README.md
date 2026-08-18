@@ -56,10 +56,10 @@ Before running anything:
 - **Model deployments** (chat, embedding, rerank) on OpenAI-compatible endpoints. The
   proxy validates every model id against LiteLLM's registry at startup, so the ids must be
   ones LiteLLM maps — chat `gpt-5`, embedding `text-embedding-3-small`. Rerank is
-  `<rerankProvider>/<rerankDeployment>`: `cohere` (default) with `rerank-v3.5`, or
-  `azure_ai` with LiteLLM's canonical name (e.g. `cohere-rerank-v4.0-fast`) to run a newer
-  reranker — see `customer.example.yaml`. **The embedding model's dimension fixes the index
-  dimension and is immutable after install.**
+  `<rerankProvider>/<rerankDeployment>`: `azure_ai` (recommended) with LiteLLM's canonical
+  name (e.g. `cohere-rerank-v4.0-fast`) for the current Cohere reranker, or `cohere` with
+  the older `rerank-v3.5` — see `customer.example.yaml`. **The embedding model's dimension
+  fixes the index dimension and is immutable after install.**
 - **Tooling:** `kubectl`, `helm`, `python3`, `openssl`; `az` for the live preflight checks.
   Install the one Python dependency (PyYAML) into a virtualenv and keep it active for the
   run (the generator, preflight, and install wrapper all use it):
