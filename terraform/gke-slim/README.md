@@ -31,7 +31,11 @@ Individual names can still be overridden (`cluster_name`, `blob_prefix`, ...).
   Identity** enabled (`<project>.svc.id.goog`) and a single vanilla node pool (`e2-standard-8`,
   provisional pending load sizing), on `GKE_METADATA` so pods can mint Workload Identity tokens.
   GKE ships CoreDNS, the GCE ingress controller, and a default StorageClass in-cluster, so there
-  are no addons to declare.
+  are no addons to declare. Control plane **and** node pool run **1.35+**, minimum
+  `1.35.0-gke.3047000` — below that the GKE Dataplane V2 (Cilium) agent can delete a live pod's
+  CiliumEndpoint on a newly created node and drop its pod/DNS traffic; the version validations
+  reject an affected build (fixed builds: `1.33.11-gke.1137000+`, `1.34.6-gke.1154000+`,
+  `1.35.0-gke.3047000+`).
 - A least-privilege **node service account** (logging/monitoring/Artifact Registry reader only) in
   place of the broad Compute Engine default SA. Pod-level GCS access is **not** on the node SA — it
   comes from Workload Identity.

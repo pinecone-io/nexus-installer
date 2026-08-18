@@ -10,9 +10,10 @@ region  = "us-central1"
 name_prefix = "nexus-slim"
 environment = "dev"
 
-# Control-plane version: leave unset to take the release channel's default (today 1.35.x), or
-# pin a minor prefix the channel offers to mirror a customer's target. Use 1.35+ at minimum —
-# the floor for the GKE Dataplane V2 (Cilium) fix.
+# Control-plane + node version. Default "1.35" resolves to the highest 1.35.x the channel
+# offers (currently 1.35.6-gke.1641000), which clears the module minimum of 1.35.0-gke.3047000 —
+# below that the GKE Dataplane V2 (Cilium) stale-endpoint bug drops pod/DNS traffic on freshly
+# created nodes. Pin a fuller version only to mirror a customer's target; it must be a fixed build.
 # kubernetes_version = "1.35"
 release_channel = "REGULAR"
 

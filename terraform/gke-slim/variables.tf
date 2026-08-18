@@ -51,14 +51,27 @@ variable "labels" {
 
 variable "kubernetes_version" {
   description = <<-EOT
-    GKE control-plane version prefix (e.g. "1.35"); GKE selects the patch. Null (default) takes
-    the release channel's current default, which never ages out of the channel and today serves
-    1.35.x. Use 1.35+ at minimum — it is the floor for the GKE Dataplane V2 (Cilium) fix. Set a
-    prefix only to pin the cluster to a customer's target minor (it must be offered in
-    release_channel).
+    GKE control-plane + node version, applied to both the master and the node pool. Defaults to
+    "1.35" — GKE resolves the highest 1.35.x the release channel offers (today 1.35.6-gke.1641000),
+    which clears this module's minimum of 1.35.0-gke.3047000. Below that minimum the GKE Dataplane
+    V2 (Cilium) agent can delete a live pod's CiliumEndpoint on a freshly created node, dropping its
+    pod/DNS traffic until the pod is recreated (fixed builds: 1.33.11-gke.1137000+, 1.34.6-gke.1154000+,
+    1.35.0-gke.3047000+). The fix must be on the node version, so it is pinned there too. Pin a fuller
+    version only to mirror a customer's target; the validations below reject an affected build.
   EOT
   type        = string
-  default     = null
+  default     = "1.35"
+
+  validation {
+    condition     = can(regex("^1\\.(3[5-9]|[4-9][0-9])", var.kubernetes_version))
+    error_message = "kubernetes_version must be 1.35 or newer; the GKE Dataplane V2 / Cilium stale-endpoint fix floor is 1.35.0-gke.3047000."
+  }
+  validation {
+    # A 1.35.1+ build is a later train and always carries the fix; only an explicit 1.35.0-gke.N
+    # build can be below it, so gate that case on the gke build number.
+    condition     = !can(regex("^1\\.35\\.0-gke\\.", var.kubernetes_version)) || tonumber(regex("gke\\.(\\d+)", var.kubernetes_version)[0]) >= 3047000
+    error_message = "A 1.35.0 build must be 1.35.0-gke.3047000 or later (the GKE Dataplane V2 / Cilium stale-endpoint fix)."
+  }
 }
 
 variable "release_channel" {

@@ -16,8 +16,6 @@ resource "google_container_cluster" "this" {
   remove_default_node_pool = true
   initial_node_count       = 1
 
-  # Null pins nothing — the release channel's default applies. A prefix must be one the
-  # channel currently offers.
   min_master_version = var.kubernetes_version
   release_channel {
     channel = var.release_channel
@@ -60,6 +58,10 @@ resource "google_container_node_pool" "this" {
   name     = "system"
   cluster  = google_container_cluster.this.id
   location = var.region
+
+  # anetd (Cilium) runs on the nodes, so the Dataplane V2 stale-endpoint fix must be on the
+  # node version — pin it here, not just on the master.
+  version = var.kubernetes_version
 
   # Per-zone count; a regional cluster spreads the pool across the region's zones.
   initial_node_count = var.node_count
