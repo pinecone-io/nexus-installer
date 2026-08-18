@@ -435,6 +435,34 @@ def check_storage_irsa(inp):
         fail(f"storage.roleArn does not look like an IAM role ARN: {role!r}")
 
 
+def check_buckets_gcs(inp):
+    section("GCS buckets")
+    prefix = get(inp, "storage.bucketPrefix")
+    if not prefix:
+        fail("storage.bucketPrefix is empty (blob.gcs.bucketPrefix is required for gcs)")
+
+    if prefix:
+        names = [f"{prefix}-db"] + [f"{prefix}-nexus-{s}" for s in NEXUS_BUCKET_STORES]
+        ok(f"7 buckets derive from stem '{prefix}': {', '.join(names)}")
+
+    # Drift vs the emitted overlay.
+    gg = load_gen("values.gcs.yaml")
+    gen_prefix = get(gg, "blob.gcs.bucketPrefix") if gg else None
+    if gen_prefix is not None and prefix and gen_prefix != prefix:
+        fail(f"bucketPrefix drift: input '{prefix}' != generated blob.gcs.bucketPrefix '{gen_prefix}'")
+
+
+def check_storage_gcs(inp):
+    section("GCS / Workload Identity")
+    gsa = get(inp, "storage.serviceAccount", "")
+    if not gsa:
+        fail("storage.serviceAccount is empty (the GSA every blob-accessing SA impersonates)")
+    elif gsa.endswith(".iam.gserviceaccount.com") and "@" in gsa:
+        ok(f"serviceAccount is a GSA email ({gsa})")
+    else:
+        fail(f"storage.serviceAccount does not look like a GSA email: {gsa!r}")
+
+
 # Fields the customer must fill with a value only they have; leftover example text
 # here is exactly what slipped through on a real install and failed at curation. Rule 3
 # (equals-example) is scoped to these [YOURS] fields so [DEFAULT]/[PINECONE] values that
@@ -522,8 +550,11 @@ def check_live(inp):
     else:
         ok(f"kube context '{ctx}' reachable")
 
-    if storage_provider(inp) == "s3":
+    provider = storage_provider(inp)
+    if provider == "s3":
         _live_s3_buckets(inp)
+    elif provider == "gcs":
+        _live_gcs_buckets(inp)
     else:
         _live_abs_containers(inp)
 
@@ -555,9 +586,12 @@ def check_live(inp):
             repo, tag = body.rsplit(":", 1)
             _acr_tag_check(acr_name, sub, repo, tag)
 
-    if storage_provider(inp) == "s3":
+    if provider == "s3":
         section("LIVE: IRSA trust")
         _check_irsa_trust(inp)
+    elif provider == "gcs":
+        section("LIVE: Workload Identity bindings")
+        _check_wi_binding(inp)
     else:
         section("LIVE: workload identity federated credentials")
         auth = get(inp, "storage.auth", "shared_key")
@@ -651,6 +685,65 @@ def _check_irsa_trust(inp):
         ok(f"all {len(BLOB_SERVICE_ACCOUNTS)} blob-accessing SAs federated on role '{role_name}'")
 
 
+def _live_gcs_buckets(inp):
+    section("LIVE: GCS buckets")
+    prefix = get(inp, "storage.bucketPrefix")
+    if not prefix:
+        warn("no bucketPrefix to check — skipping")
+        return
+    names = [f"{prefix}-db"] + [f"{prefix}-nexus-{s}" for s in NEXUS_BUCKET_STORES]
+    for name in names:
+        rc, out = run(["gcloud", "storage", "buckets", "describe", f"gs://{name}", "--format=value(name)"])
+        (ok if rc == 0 else fail)(
+            f"bucket {name} {'present' if rc == 0 else 'MISSING or not accessible'}"
+        )
+
+
+def _check_wi_binding(inp):
+    # The GSA must grant roles/iam.workloadIdentityUser to every blob-accessing KSA subject, or
+    # its pods get 403 on GCS once the chart annotates the SAs from serviceAccount.
+    gsa = get(inp, "storage.serviceAccount", "")
+    project = get(inp, "storage.project", "")
+    ns = "nexus"
+    if "@" not in gsa or not gsa.endswith(".iam.gserviceaccount.com"):
+        warn("storage.serviceAccount is not a GSA email — skipping Workload Identity binding coverage")
+        return
+    if not project:
+        warn("storage.project is empty — cannot form the <project>.svc.id.goog members; skipping binding coverage")
+        return
+
+    pool = f"{project}.svc.id.goog"
+    rc, out = run([
+        "gcloud", "iam", "service-accounts", "get-iam-policy", gsa,
+        "--project", project, "--format=json",
+    ])
+    if rc != 0:
+        warn(f"could not read IAM policy of GSA '{gsa}': {out.splitlines()[0] if out else 'gcloud error'}")
+        return
+    try:
+        doc = json.loads(out)
+    except json.JSONDecodeError:
+        warn(f"could not parse the IAM policy of '{gsa}'")
+        return
+
+    # Collect every member bound as roles/iam.workloadIdentityUser.
+    members = set()
+    for binding in doc.get("bindings", []):
+        if binding.get("role") == "roles/iam.workloadIdentityUser":
+            members.update(binding.get("members", []))
+
+    missing = False
+    for sa in BLOB_SERVICE_ACCOUNTS:
+        member = f"serviceAccount:{pool}[{ns}/{sa}]"
+        if member in members:
+            ok(f"GSA binds {sa}")
+        else:
+            fail(f"GSA '{gsa}' has no workloadIdentityUser binding for {sa} (member '{member}') — its pods will get 403 on GCS")
+            missing = True
+    if not missing:
+        ok(f"all {len(BLOB_SERVICE_ACCOUNTS)} blob-accessing SAs bound on GSA '{gsa}'")
+
+
 def _acr_tag_check(acr_name, sub, repository, tag):
     rc, out = run([
         "az", "acr", "repository", "show-tags", "-n", acr_name, "--subscription", sub,
@@ -740,14 +833,19 @@ def main():
     print(f"Preflight: {args.inputs}" + ("  (static + live)" if args.live else "  (static)"))
     check_dimension(inp)
     check_embedding_width(inp)
-    if storage_provider(inp) == "s3":
+    provider = storage_provider(inp)
+    if provider == "s3":
         check_buckets_s3(inp)
+    elif provider == "gcs":
+        check_buckets_gcs(inp)
     else:
         check_containers(inp)
     check_inference(inp)
     check_registry(inp)
-    if storage_provider(inp) == "s3":
+    if provider == "s3":
         check_storage_irsa(inp)
+    elif provider == "gcs":
+        check_storage_gcs(inp)
     else:
         check_storage_auth(inp)
     check_placeholders(inp)
