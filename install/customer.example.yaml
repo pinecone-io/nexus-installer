@@ -46,7 +46,7 @@ registry:
 # suffix (0.0.0-bundle.<id>) and leaves each image on its baked tag. oci-stable-latest is
 # discovery-only — it moves, so don't pin an install to it.
 bundle:
-  tag: oci-stable-main-718ee69           # [PINECONE] a promoted immutable id couples the stack; a raw main-<sha> keeps per-image pins
+  tag: oci-stable-<id>                    # [PINECONE] promoted immutable release id (couples the stack); paste what Pinecone gives you
   # The data plane BAKES these into the published OCI chart at build time and the
   # OCI install path cannot override them (see README "OCI vs local-chart path").
   # Pinecone ships these two values with the bundle. If your embedding dimension
