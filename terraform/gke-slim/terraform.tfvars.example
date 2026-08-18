@@ -36,10 +36,9 @@ enable_storage_identity = true
 blob_prefix = "acme"
 
 # Workload Identity binding is automatic — the module binds every blob-accessing SA the chart
-# runs. Set nothing for a standard install.
+# runs (fixed names; the chart pins fullnameOverride=nexus). Set nothing for a standard install.
 #
-# helm_release_name = "nexus"   # release name you `helm install` with
-# helm_namespace    = "nexus"   # namespace the chart installs into
+# helm_namespace = "nexus"      # namespace the chart installs into
 #
 # Extra (non-standard) SAs only, appended to the derived set:
 # workload_service_accounts = [

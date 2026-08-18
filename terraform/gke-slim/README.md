@@ -131,12 +131,13 @@ object and a `ManagedCertificate` are a separate step).
 | `project` | `blob.gcs.project` (with `nexus.config.cloud.provider = gcp`) |
 
 Workload Identity binding is wired **automatically**. The module binds every blob-accessing service
-account the umbrella chart runs — the two `nexus-*` SAs (named after `helm_release_name`) plus the
-five `db-slim` SAs — in `helm_namespace`, both defaulting to `nexus`. The full list lives in
-`locals.tf` (`blob_accessing_service_accounts`). For a standard install you set nothing:
+account the umbrella chart runs — the two `nexus-*` SAs plus the five `db-slim` SAs — in
+`helm_namespace` (default `nexus`). The SA names are fixed, not release-derived: the chart pins the
+nexus subchart's `fullnameOverride` to `nexus`, so they are `nexus-api` / `nexus-orchestrator`
+whatever Helm release name you install under. The full list lives in `locals.tf`
+(`blob_accessing_service_accounts`). For a standard install you set nothing:
 
-- Running under a different release name / namespace? Set `helm_release_name` / `helm_namespace`
-  and the bound set follows.
+- Installing into a different namespace? Set `helm_namespace` and the bindings follow.
 - Need an extra (non-standard) service account bound? Add it via `workload_service_accounts` —
   entries are appended to the derived set.
 

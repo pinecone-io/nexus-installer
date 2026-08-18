@@ -13,11 +13,13 @@ locals {
     environment  = var.environment
   }, var.labels)
 
-  # Every SA whose pods reach GCS under Workload Identity — untrusted ones get 403. Keep in
-  # sync with the chart (file-proxy shares nexus-api, task pods share nexus-orchestrator).
+  # Every SA whose pods reach GCS under Workload Identity — untrusted ones get 403. These are
+  # fixed names, not release-derived: the umbrella pins the nexus subchart's fullnameOverride to
+  # "nexus", so the SAs are nexus-api / nexus-orchestrator whatever the Helm release name is
+  # (file-proxy shares nexus-api, task pods share nexus-orchestrator). Keep in sync with the chart.
   blob_accessing_service_accounts = [
-    "${var.helm_release_name}-api",
-    "${var.helm_release_name}-orchestrator",
+    "nexus-api",
+    "nexus-orchestrator",
     "docs-api-sa",
     "index-builders-slab-sa",
     "query-routers-sa",

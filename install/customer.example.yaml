@@ -85,6 +85,8 @@ storage:
   # region: us-east-1                    # [YOURS]  bucket region -> blob.s3.region (the AWS SDK has no default)
   # roleArn: arn:aws:iam::<acct>:role/<role>   # [YOURS] IRSA role every blob-accessing SA assumes
   # --- provider: gcs (GCP) — bucket-per-store, keyless Workload Identity (delete the abs keys above) ---
+  # Needs a bundle whose chart includes GCS support; an older chart's values.schema.json permits
+  # only local/abs/s3 and helm rejects provider: gcs at dry-run. Use the bundle Pinecone gives you.
   # provider: gcs
   # bucketPrefix: acme-abc123            # [YOURS]  stem: <prefix>-db + six <prefix>-nexus-* -> blob.gcs.bucketPrefix
   # serviceAccount: nexus-blob@<project>.iam.gserviceaccount.com   # [YOURS] GSA every blob-accessing SA impersonates -> blob.gcs.serviceAccount

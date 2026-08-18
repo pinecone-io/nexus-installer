@@ -232,9 +232,11 @@ def build_s3_values(inp):
 
 
 def build_gcs_values(inp):
-    # The chart derives the seven bucket names from the stem and the Workload-Identity SA
-    # annotation from serviceAccount (charts/nexus/templates/_helpers.tpl), so nothing here is
-    # hand-listed per store. No region: the GCS SDK addresses buckets by their global name.
+    # Requires a bundle whose chart schema accepts provider: gcs; an older chart rejects it at the
+    # helm dry-run in install.sh (values.schema.json allows only local/abs/s3). The chart derives
+    # the seven bucket names from the stem and the Workload-Identity SA annotation from
+    # serviceAccount (charts/nexus/templates/_helpers.tpl), so nothing here is hand-listed per
+    # store. No region: the GCS SDK addresses buckets by their global name.
     gcs_block = {
         "bucketPrefix": req(inp, "storage.bucketPrefix"),
         "serviceAccount": req(inp, "storage.serviceAccount"),

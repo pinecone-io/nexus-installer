@@ -21,6 +21,11 @@ resource "google_container_cluster" "this" {
     channel = var.release_channel
   }
 
+  # Dataplane V2 (Cilium/anetd), not the legacy kube-proxy datapath — a Standard cluster does not
+  # enable it by default. It is what mirrors a real GKE data plane and what the node version floor
+  # (variables.tf) guards against the stale-endpoint bug in.
+  datapath_provider = "ADVANCED_DATAPATH"
+
   # VPC-native: pods and Services come from the named secondary ranges on the subnet, not the
   # node range.
   networking_mode = "VPC_NATIVE"

@@ -68,8 +68,9 @@ variable "kubernetes_version" {
   }
   validation {
     # A 1.35.1+ build is a later train and always carries the fix; only an explicit 1.35.0-gke.N
-    # build can be below it, so gate that case on the gke build number.
-    condition     = !can(regex("^1\\.35\\.0-gke\\.", var.kubernetes_version)) || tonumber(regex("gke\\.(\\d+)", var.kubernetes_version)[0]) >= 3047000
+    # build can be below it, so gate that case on the gke build number. The parse runs only for a
+    # 1.35.0-gke.N string; try() lets every other value (e.g. the "1.35" default) pass.
+    condition     = try(tonumber(regex("^1\\.35\\.0-gke\\.(\\d+)$", var.kubernetes_version)[0]) >= 3047000, true)
     error_message = "A 1.35.0 build must be 1.35.0-gke.3047000 or later (the GKE Dataplane V2 / Cilium stale-endpoint fix)."
   }
 }
@@ -182,11 +183,9 @@ variable "blob_prefix" {
   default     = null
 }
 
-variable "helm_release_name" {
-  description = "Helm release name; the derived nexus-* blob SAs follow it. Match your `helm install`."
-  type        = string
-  default     = "nexus"
-}
+# No helm_release_name knob: the umbrella chart pins the nexus subchart's fullnameOverride to
+# "nexus", so the blob-accessing SAs are always nexus-api / nexus-orchestrator regardless of the
+# Helm release name (locals.tf). Only the namespace is configurable.
 
 variable "helm_namespace" {
   description = "Namespace the chart installs into; the derived Workload Identity bindings bind blob SAs here."
@@ -195,7 +194,7 @@ variable "helm_namespace" {
 }
 
 variable "workload_service_accounts" {
-  description = "Extra Kubernetes service accounts appended to the derived Workload-Identity-bound set. Empty for a standard install; for a non-default release/namespace set helm_release_name/helm_namespace instead."
+  description = "Extra Kubernetes service accounts appended to the derived Workload-Identity-bound set. Empty for a standard install; for a non-default namespace set helm_namespace instead."
   type = list(object({
     namespace       = string
     service_account = string
