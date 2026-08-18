@@ -72,10 +72,9 @@ Before running anything:
 cd install
 cp customer.example.yaml customer.yaml
 
-# Optional — if you stood the cluster up with a terraform/*-slim module, prefill the
-# storage + kubeContext fields from its outputs (auto-detects the cloud), then merge the
-# printed fragment into customer.yaml. See "Terraform hand-off" below:
-./tf-to-inputs.sh ../terraform/gke-slim   # or ../terraform/aks-slim | ../terraform/eks-slim
+# Optional — greenfield via a terraform/*-slim module? Print its storage + kubeContext
+# fields to merge into customer.yaml (see "Terraform hand-off"):
+./tf-to-inputs.sh ../terraform/gke-slim   # or aks-slim | eks-slim
 
 $EDITOR customer.yaml                      # fill in the remaining inputs; secrets are env-var NAMES
 
@@ -208,45 +207,25 @@ automatically.
 
 ## Terraform hand-off (greenfield) — optional
 
-If you stood the cluster up with one of the `terraform/*-slim` modules, you don't have to copy
-its storage and identity values into `customer.yaml` by hand. `tf-to-inputs.sh` reads the
-module's Terraform outputs and prints the matching `customer.yaml` fields — the `storage:` block
-and `kubeContext` — for you to merge in. It only prints to stdout; it never edits your file.
-
-Point it at the module you applied (the provider is auto-detected from the outputs; the default
-directory is `../terraform/aks-slim`, so bare `./tf-to-inputs.sh` covers Azure):
+If you stood the cluster up with a `terraform/*-slim` module, `tf-to-inputs.sh` prints its
+storage + `kubeContext` fields for `customer.yaml` (auto-detecting the cloud); it only prints, so
+copy the printed `storage:` block and `kubeContext` into `customer.yaml`, replacing the example
+ones:
 
 ```bash
-./tf-to-inputs.sh ../terraform/aks-slim   # Azure
+./tf-to-inputs.sh ../terraform/aks-slim   # Azure  (default dir; bare ./tf-to-inputs.sh works)
 ./tf-to-inputs.sh ../terraform/eks-slim   # AWS
 ./tf-to-inputs.sh ../terraform/gke-slim   # GCP
 ```
 
-It emits a YAML fragment — for GKE, for example:
-
-```yaml
-# --- generated from gke-slim terraform outputs; merge into customer.yaml ---
-kubeContext: gke_my-project_us-central1_gke-nexus-slim-dev
-storage:
-  provider: gcs
-  bucketPrefix: nexus-slim-dev-ab12cd
-  serviceAccount: nexus-dev-blob@my-project.iam.gserviceaccount.com
-  project: my-project
-```
-
-Copy that `kubeContext` line and `storage:` block into your `customer.yaml`, replacing the
-example ones. This fills only the storage/identity half — you still fill `registry.*`,
-`inference.*`, `bundle.*`, and `embedding.*` yourself. `preflight.py` then cross-checks the
-merged result against the generated overlays, so a bad paste (e.g. a bucket prefix that doesn't
-match the buckets the module created) is caught before install.
-
-What each module fills:
+It fills only the storage/identity half — you still fill `registry.*`, `inference.*`,
+`bundle.*`, and `embedding.*`, and `preflight.py` catches a bad paste before install.
 
 | Module | Fills into `customer.yaml` |
 |---|---|
 | `aks-slim` (Azure) | `storage.provider: abs`, `account`, `containerPrefix`, `auth: workload_identity`, `clientId`; `kubeContext` |
 | `eks-slim` (AWS) | `storage.provider: s3`, `bucketPrefix`, `region`, `roleArn`; `kubeContext` |
-| `gke-slim` (GCP) | `storage.provider: gcs`, `bucketPrefix`, `serviceAccount`, `project`; `kubeContext` (keyless via Workload Identity — no region or key field) |
+| `gke-slim` (GCP) | `storage.provider: gcs`, `bucketPrefix`, `serviceAccount`, `project`; `kubeContext` (keyless — no region or key) |
 
 ## Where Pinecone takes over (hand-off points)
 
