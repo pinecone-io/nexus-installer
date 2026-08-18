@@ -300,7 +300,8 @@ def gateway_spec(inp):
     if not inference["gateway"]:
         die(
             "inference.gateway is present but empty. Either fill it in (tokenUrl, "
-            "clientIdEnv, clientSecretEnv at minimum) or remove the `gateway:` line: "
+            "clientIdEnv, clientSecretEnv, scope, apiVersion at minimum) or remove "
+            "the `gateway:` line: "
             "an empty block would install the direct-to-provider catalog against what "
             "inference.endpoint now spells as a gateway base, and chat + embedding "
             "would fail at runtime. If you uncommented `gateway:` in customer.yaml, "
@@ -316,15 +317,32 @@ def gateway_spec(inp):
             "the env var holding the key, or drop subscriptionHeader if your gateway "
             "needs no key."
         )
+    scope = str(opt(inp, "inference.gateway.scope", "")).strip()
+    if not scope:
+        die(
+            "inference.gateway.scope is required. A client_credentials request that "
+            "carries no scope is rejected by the authorization server (Okta answers "
+            "HTTP 400 invalid_scope), so the proxy would never mint a token and every "
+            "chat + embedding call would fail. Set it to the scope your gateway client "
+            "is authorized for."
+        )
+    api_version = str(opt(inp, "inference.gateway.apiVersion", "")).strip()
+    if not api_version:
+        die(
+            "inference.gateway.apiVersion is required. The gateway expects the "
+            "?api-version= query param on every call and rejects a request without it, "
+            "so chat + embedding would fail at runtime. Set it to the version the "
+            "gateway publishes (e.g. 2025-01-01-preview)."
+        )
     spec = {
         "token_url": req(inp, "inference.gateway.tokenUrl"),
         "client_id_env": req(inp, "inference.gateway.clientIdEnv"),
         "client_secret_env": req(inp, "inference.gateway.clientSecretEnv"),
-        "scope": opt(inp, "inference.gateway.scope", ""),
+        "scope": scope,
         "client_auth": opt(inp, "inference.gateway.clientAuth", "basic"),
         "subscription_key_env": key_env,
         "subscription_header": header or DEFAULT_SUBSCRIPTION_HEADER,
-        "api_version": opt(inp, "inference.gateway.apiVersion", ""),
+        "api_version": api_version,
     }
     if spec["client_auth"] not in ("basic", "post"):
         die(f"inference.gateway.clientAuth must be basic or post, got {spec['client_auth']!r}")
@@ -345,9 +363,7 @@ def cleartext_token_url_host(token_url):
 
 def _gateway_model_extras(gw):
     """Fields every gateway-fronted model entry carries."""
-    extras = {"credential_ref": GATEWAY_CREDENTIAL}
-    if gw["api_version"]:
-        extras["api_version"] = gw["api_version"]
+    extras = {"credential_ref": GATEWAY_CREDENTIAL, "api_version": gw["api_version"]}
     if gw["subscription_key_env"]:
         extras["extra_header_refs"] = {
             gw["subscription_header"]: GATEWAY_SUBSCRIPTION_KEY_REF
@@ -470,9 +486,8 @@ def build_self_hosted_values(inp, dim):
             "client_id_ref": GATEWAY_CLIENT_ID_REF,
             "client_secret_ref": GATEWAY_CLIENT_SECRET_REF,
             "client_auth": gw["client_auth"],
+            "scope": gw["scope"],
         }
-        if gw["scope"]:
-            credential_entry["scope"] = gw["scope"]
         provider_keys[GATEWAY_CLIENT_ID_REF] = ""
         provider_keys[GATEWAY_CLIENT_SECRET_REF] = ""
         if gw["subscription_key_env"]:

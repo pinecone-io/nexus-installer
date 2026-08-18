@@ -185,6 +185,10 @@ uncomment the `gateway:` block your `customer.yaml` already carries and:
   client id and secret (`gateway.clientIdEnv` / `clientSecretEnv`) and, if your gateway
   requires one, its subscription key (`gateway.subscriptionKeyEnv`). The short-lived bearer
   token is minted and refreshed by the inference proxy — you never supply a token.
+- `gateway.scope` and `gateway.apiVersion` are **required**. A `client_credentials` request
+  that carries no scope is refused by the authorization server (Okta answers
+  `400 invalid_scope`), and the gateway rejects a call that arrives without
+  `?api-version=`. `gen-values.py` fails rather than emit a catalog that cannot work.
 - **Rerank is unaffected**: it keeps `inference.rerankEndpoint` + `rerankKeyEnv` and its own
   static key.
 - Set `inference.contextWindow` / `inference.maxOutputTokens` — this path does not introspect

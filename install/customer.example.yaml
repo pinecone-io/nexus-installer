@@ -133,11 +133,11 @@ inference:
   #   tokenUrl: https://acme.okta.com/oauth2/aus1abc/v1/token   # [YOURS] token endpoint
   #   clientIdEnv: NEXUS_GATEWAY_CLIENT_ID                      # [YOURS] env var holding the client id
   #   clientSecretEnv: NEXUS_GATEWAY_CLIENT_SECRET              # [YOURS] env var holding the client secret
-  #   scope: genai.invoke                    # [OPTIONAL] omit if your client needs no scope
+  #   scope: genai.invoke                    # [YOURS] REQUIRED — a token request with no scope is refused (400 invalid_scope)
   #   clientAuth: basic                      # [DEFAULT] basic | post -- how the client authenticates to the token endpoint
   #   subscriptionKeyEnv: NEXUS_GATEWAY_SUBSCRIPTION_KEY  # [OPTIONAL] env var holding the gateway's own key
   #   subscriptionHeader: Ocp-Apim-Subscription-Key       # [DEFAULT] header that key travels in
-  #   apiVersion: 2025-01-01-preview         # [OPTIONAL] sent as the ?api-version= query param
+  #   apiVersion: 2025-01-01-preview         # [YOURS] REQUIRED — sent as the ?api-version= query param on every call
   #
   # Gateway-path only: the proxy cannot introspect the deployment's limits when it
   # talks to a gateway, so state them. Defaults below suit a gpt-5-class deployment;
