@@ -351,13 +351,32 @@ def check_inference(inp):
         fail(f"chat tiers incomplete — lite/standard/pro must all be set, got {chat_tiers}")
 
     # Naming guardrail — advisory, not fatal (customer may differ).
-    for field, name in {"embeddingDeployment": "text-embedding-3-small", "rerankDeployment": "rerank-v3.5"}.items():
-        val = get(inp, f"inference.{field}")
-        if val != name:
-            warn(
-                f"inference.{field}={val!r}: the router expects the deployment named "
-                f"{name!r} (it matches on the deployment name)."
-            )
+    embed_dep = get(inp, "inference.embeddingDeployment")
+    if embed_dep != "text-embedding-3-small":
+        warn(
+            f"inference.embeddingDeployment={embed_dep!r}: the recommended model is "
+            "'text-embedding-3-small'."
+        )
+    # Rerank: the proxy validates the model id `<rerankProvider>/<rerankDeployment>` against
+    # LiteLLM's registry at startup (litellm.get_model_info), so the id must be one LiteLLM
+    # maps — NOT a fixed 'rerank-v3.5'. Flag the combinations likely to fail that check.
+    rerank_dep = get(inp, "inference.rerankDeployment")
+    rerank_provider = get(inp, "inference.rerankProvider", "cohere")
+    if rerank_provider not in ("cohere", "azure_ai"):
+        fail(f"inference.rerankProvider must be 'cohere' or 'azure_ai', got {rerank_provider!r}")
+    elif rerank_provider == "cohere" and rerank_dep and not rerank_dep.startswith("rerank-v3"):
+        warn(
+            f"inference.rerankDeployment={rerank_dep!r} with rerankProvider=cohere yields model "
+            f"id 'cohere/{rerank_dep}', which LiteLLM may not recognize (proxy startup fails if "
+            "not). Known-good is 'rerank-v3.5'; for a newer Cohere reranker use "
+            "rerankProvider=azure_ai with the canonical name (e.g. cohere-rerank-v4.0-fast)."
+        )
+    elif rerank_provider == "azure_ai" and rerank_dep and not rerank_dep.startswith("cohere-rerank-"):
+        warn(
+            f"inference.rerankDeployment={rerank_dep!r} with rerankProvider=azure_ai yields model "
+            f"id 'azure_ai/{rerank_dep}'; azure_ai expects LiteLLM's canonical Azure AI Cohere name "
+            "(e.g. cohere-rerank-v4.0-fast), which must ALSO be your Foundry deployment name."
+        )
 
 
 def check_registry(inp):

@@ -253,12 +253,48 @@ def build_gcs_values(inp):
     }
 
 
+def _azure_ai_rerank_url(endpoint):
+    """Pin the Azure AI Cohere rerank endpoint to its /v2/rerank path. litellm's azure_ai
+    rerank config (unlike its cohere config) defaults a bare base to the legacy
+    /v1/rerank, so a customer's `.../providers/cohere` would otherwise hit v1."""
+    base = endpoint.rstrip("/")
+    if base.endswith("/v1/rerank") or base.endswith("/v2/rerank"):
+        return base
+    if base.endswith("/v1") or base.endswith("/v2"):
+        return base + "/rerank"
+    return base + "/v2/rerank"
+
+
+def rerank_catalog_entry(provider, deployment, endpoint):
+    """(model, base_url) for the rerank catalog entry, per the provider style.
+
+    Both routes reach a Foundry-hosted Cohere reranker; they differ in the litellm model
+    id, which the inference proxy validates at startup via litellm.get_model_info:
+
+      cohere   -> model `cohere/<deployment>`; endpoint passed as-is (litellm's cohere
+                  config appends /v2/rerank itself). <deployment> must be a litellm-
+                  recognized Cohere rerank id (e.g. rerank-v3.5). A name litellm doesn't
+                  map (e.g. rerank-v4.0-fast) fails proxy startup validation.
+      azure_ai -> model `azure_ai/<deployment>`; <deployment> must be litellm's canonical
+                  Azure AI Cohere name (e.g. cohere-rerank-v4.0-fast) AND the Foundry
+                  deployment name — litellm sends it as the request-body `model`. The base
+                  is pinned to the /v2/rerank path.
+    """
+    if provider == "cohere":
+        return f"cohere/{deployment}", endpoint
+    if provider == "azure_ai":
+        return f"azure_ai/{deployment}", _azure_ai_rerank_url(endpoint)
+    die(f"inference.rerankProvider must be 'cohere' or 'azure_ai', got {provider!r}")
+
+
 def build_self_hosted_values(inp, dim):
     endpoint = req(inp, "inference.endpoint")
     rerank_endpoint = req(inp, "inference.rerankEndpoint")
     chat = req(inp, "inference.chatDeployment")
     embed = req(inp, "inference.embeddingDeployment")
     rerank = req(inp, "inference.rerankDeployment")
+    rerank_provider = opt(inp, "inference.rerankProvider", "cohere")
+    rerank_model, rerank_base_url = rerank_catalog_entry(rerank_provider, rerank, rerank_endpoint)
 
     # the proxy requires each tier to resolve to a distinct model ref
     tier_labels = {"lite": "Chat (lite)", "standard": "Chat (standard)", "pro": "Chat (pro)"}
@@ -298,8 +334,8 @@ def build_self_hosted_values(inp, dim):
     rerank_models = {
         "rerank": {
             "api_style": "litellm",
-            "model": f"cohere/{rerank}",
-            "base_url": rerank_endpoint,
+            "model": rerank_model,
+            "base_url": rerank_base_url,
             "api_key_ref": RERANK_KEY_REF,
             "max_retries": 2,
             "max_query_chars": 1000,

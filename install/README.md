@@ -54,10 +54,14 @@ Before running anything:
   you; otherwise create them before install. Names derive from your stem: `<stem>-db`
   plus `<stem>-nexus-{source,knowledge,archive,traces,snapshots,library}`.
 - **Model deployments** (chat, embedding, rerank) on OpenAI-compatible endpoints. The
-  deployment names must match names the routing library recognizes — chat `gpt-5`,
-  embedding `text-embedding-3-small`, and the rerank deployment named literally
-  `rerank-v3.5` (even when it serves a newer Cohere rerank model). **The embedding
-  model's dimension fixes the index dimension and is immutable after install.**
+  proxy validates every model id against LiteLLM's registry at startup, so the ids must
+  be ones LiteLLM recognizes — chat `gpt-5`, embedding `text-embedding-3-small`. For
+  rerank the id is `<inference.rerankProvider>/<inference.rerankDeployment>`: with
+  `rerankProvider: cohere` (default) name the deployment a LiteLLM-recognized Cohere id
+  (`rerank-v3.5`); to run a newer reranker under its real name use `rerankProvider:
+  azure_ai` with LiteLLM's canonical name (e.g. `cohere-rerank-v4.0-fast`), which must
+  also be the Foundry deployment name. **The embedding model's dimension fixes the index
+  dimension and is immutable after install.**
 - **Tooling:** `kubectl`, `helm`, `python3`, `openssl`; `az` for the live preflight checks.
   Install the one Python dependency (PyYAML) into a virtualenv and keep it active for the
   run (the generator, preflight, and install wrapper all use it):
