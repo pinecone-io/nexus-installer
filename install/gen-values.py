@@ -254,9 +254,8 @@ def build_gcs_values(inp):
 
 
 def _azure_ai_rerank_url(endpoint):
-    """Pin the Azure AI Cohere rerank endpoint to its /v2/rerank path. litellm's azure_ai
-    rerank config (unlike its cohere config) defaults a bare base to the legacy
-    /v1/rerank, so a customer's `.../providers/cohere` would otherwise hit v1."""
+    # Pin /v2/rerank: litellm's azure_ai route defaults a bare base to the legacy
+    # /v1/rerank (its cohere route doesn't), so `.../providers/cohere` would hit v1.
     base = endpoint.rstrip("/")
     if base.endswith("/v1/rerank") or base.endswith("/v2/rerank"):
         return base
@@ -266,20 +265,10 @@ def _azure_ai_rerank_url(endpoint):
 
 
 def rerank_catalog_entry(provider, deployment, endpoint):
-    """(model, base_url) for the rerank catalog entry, per the provider style.
-
-    Both routes reach a Foundry-hosted Cohere reranker; they differ in the litellm model
-    id, which the inference proxy validates at startup via litellm.get_model_info:
-
-      cohere   -> model `cohere/<deployment>`; endpoint passed as-is (litellm's cohere
-                  config appends /v2/rerank itself). <deployment> must be a litellm-
-                  recognized Cohere rerank id (e.g. rerank-v3.5). A name litellm doesn't
-                  map (e.g. rerank-v4.0-fast) fails proxy startup validation.
-      azure_ai -> model `azure_ai/<deployment>`; <deployment> must be litellm's canonical
-                  Azure AI Cohere name (e.g. cohere-rerank-v4.0-fast) AND the Foundry
-                  deployment name — litellm sends it as the request-body `model`. The base
-                  is pinned to the /v2/rerank path.
-    """
+    # (model, base_url) for the rerank entry. The proxy validates the model id at startup
+    # (litellm.get_model_info): `cohere/` only maps rerank-v3.5, so `azure_ai/` routes a
+    # newer reranker under litellm's canonical name. See customer.example.yaml for the
+    # rerankProvider/rerankDeployment naming rules.
     if provider == "cohere":
         return f"cohere/{deployment}", endpoint
     if provider == "azure_ai":

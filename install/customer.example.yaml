@@ -93,26 +93,21 @@ storage:
   # project: my-gcp-project              # [YOURS]  GCP project holding the buckets + GSA -> blob.gcs.project
 
 # --- Model endpoints (OpenAI-compatible: Azure OpenAI + Azure AI Foundry) -----
-# You create the chat/embedding/rerank deployments. The inference proxy validates every
-# model id against LiteLLM's registry at startup (litellm.get_model_info), so each id
-# must be one LiteLLM recognizes: chat `gpt-5`, embedding `text-embedding-3-small`. For
-# rerank the id is `<rerankProvider>/<rerankDeployment>` (see rerankProvider below). Keys
-# are env-var references injected at install via --set (never written to a values file).
+# The proxy validates every model id against LiteLLM's registry at startup, so each must
+# be one LiteLLM maps: chat `gpt-5`, embedding `text-embedding-3-small`, rerank
+# `<rerankProvider>/<rerankDeployment>` (below). Keys are env-var references injected via
+# --set at install (never written to a values file).
 inference:
   endpoint: https://acme-aoai.cognitiveservices.azure.com        # [YOURS]   chat + embedding base_url
   rerankEndpoint: https://acme-aoai.services.ai.azure.com/providers/cohere  # [YOURS] Foundry Cohere rerank base_url
   chatDeployment: gpt-5                  # [YOURS]   your deployment; name must be router-recognized (e.g. gpt-5)
   embeddingDeployment: text-embedding-3-small  # [YOURS] your deployment; recommended text-embedding-3-small
-  # rerankProvider picks the LiteLLM route to your Foundry Cohere reranker, which sets the
-  # model id the proxy validates and the deployment name it sends:
-  #   cohere   [DEFAULT] -> model `cohere/<rerankDeployment>`. rerankDeployment must be a
-  #             LiteLLM-recognized Cohere rerank id (e.g. rerank-v3.5) AND your Foundry
-  #             deployment name. A newer model LiteLLM doesn't map yet (e.g. rerank-v4.0-fast)
-  #             fails proxy startup — name that deployment rerank-v3.5, or use azure_ai.
-  #   azure_ai -> model `azure_ai/<rerankDeployment>`. rerankDeployment must be LiteLLM's
-  #             canonical Azure AI Cohere name (e.g. cohere-rerank-v4.0-fast) AND the name of
-  #             your Foundry deployment (LiteLLM sends it as the request-body model). Lets you
-  #             run a newer Cohere reranker under its real name; the /v2/rerank path is added.
+  # rerankProvider picks the LiteLLM route; rerankDeployment must be BOTH a LiteLLM-mapped
+  # model id and your Foundry deployment name:
+  #   cohere   [DEFAULT] model `cohere/<rerankDeployment>` — use rerank-v3.5. A newer name
+  #            LiteLLM can't map (rerank-v4.0-fast) fails proxy startup.
+  #   azure_ai model `azure_ai/<rerankDeployment>` — use LiteLLM's canonical name
+  #            (cohere-rerank-v4.0-fast) to run a newer reranker; base pinned to /v2/rerank.
   rerankProvider: cohere                 # [DEFAULT] cohere | azure_ai
   rerankDeployment: rerank-v3.5          # [YOURS]   your Foundry deployment; must match rerankProvider (see above)
   llmKeyEnv: NEXUS_LLM_KEY               # [DEFAULT] env var name holding the chat key
