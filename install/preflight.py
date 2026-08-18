@@ -17,9 +17,11 @@ STATIC checks (default, values-only, no cloud access):
     [YOURS] field still equal to customer.example.yaml).
 
 LIVE gateway check (--live-gateway, opt-in, makes real HTTP calls):
-  - mints an OAuth2 client_credentials token and makes one 1-token chat completion
-    through the gateway, so a wrong client secret / scope / gateway environment fails
-    here in seconds instead of as 401s after the install.
+  - mints an OAuth2 client_credentials token, then makes one 1-token chat completion
+    and one tiny embedding call through the gateway — bodies shaped the way the
+    inference proxy shapes them — so a wrong client secret / scope / gateway
+    environment, a missing embeddings route, or a gateway that drops the
+    `dimensions` request fails here in seconds instead of as 401s after the install.
 
 LIVE checks (--live, opt-in, shells out to az/kubectl):
   - kube context reachable.
@@ -408,17 +410,79 @@ def check_inference(inp):
         )
 
 
+def _is_gpt5_family(model):
+    """The inference proxy's own gpt-5 test; it renames max_tokens to
+    max_completion_tokens for exactly these model ids, so the probe must too."""
+    m = (model or "").lower()
+    return m.startswith("gpt-5") or "/gpt-5" in m or "gpt-5." in m
+
+
+def _request_dimensions(inp, embed):
+    """Whether the generated catalog sets request_dimensions (same rule as gen-values)."""
+    explicit = get(inp, "embedding.requestDimensions")
+    if explicit is None:
+        return str(embed).lower().startswith("text-embedding-3")
+    return bool(explicit)
+
+
+def _gateway_call_failed(url, status, body):
+    """Report a non-200 gateway answer by failure class. True when the call failed."""
+    if status == 200:
+        return False
+    if status == 0:
+        fail(
+            f"could not reach the gateway {url} at all: {body[:200]}. The token minted, "
+            "so the credentials are fine — this host needs a firewall/DNS allowance to "
+            "the gateway (a separate one from the authorization server), or run this "
+            "check from a host that has it."
+        )
+    elif status == 401:
+        fail(
+            f"gateway returned 401 for {url}: {body[:200]}. The token minted, so this "
+            "is the second credential (the subscription key) or an authorization "
+            "scope that does not cover this product."
+        )
+    elif status == 404:
+        fail(
+            f"gateway returned 404 for {url}: {body[:200]}. inference.endpoint must be "
+            "the gateway base up to but NOT including /deployments/, and the "
+            "deployment name must match the gateway's own route."
+        )
+    else:
+        fail(f"gateway returned HTTP {status} for {url}: {body[:200]}")
+    return True
+
+
 def check_live_gateway(inp):
-    """Mint a token and make one real chat call through the gateway.
+    """Mint a token, then make one real chat and one real embedding call through the gateway.
 
     This is the cheap version of the failure it prevents: a wrong client secret,
     an unauthorized scope or the wrong gateway environment otherwise surfaces as
-    401s from the proxy long after a 25-minute install has finished.
+    401s from the proxy long after a 25-minute install has finished. Both bodies are
+    shaped the way the inference proxy shapes them, so a green probe is evidence
+    about the traffic the install will actually send.
     """
     section("Gateway credentials (live)")
     gw = get(inp, "inference.gateway")
     if not gw:
         ok("no inference.gateway block; chat + embedding go straight to the provider")
+        return
+
+    scope = str(get(inp, "inference.gateway.scope") or "").strip()
+    if not scope:
+        fail(
+            "inference.gateway.scope is not set. A client_credentials request that "
+            "carries no scope is refused by the authorization server (Okta answers "
+            "HTTP 400 invalid_scope), so there is nothing to probe with."
+        )
+        return
+    api_version = str(get(inp, "inference.gateway.apiVersion") or "").strip()
+    if not api_version:
+        fail(
+            "inference.gateway.apiVersion is not set. The gateway expects "
+            "?api-version= on every call and rejects a request without it, so a probe "
+            "without it would not resemble the install's traffic."
+        )
         return
 
     token_url = get(inp, "inference.gateway.tokenUrl")
@@ -432,10 +496,7 @@ def check_live_gateway(inp):
         )
         return
 
-    form = {"grant_type": "client_credentials"}
-    scope = get(inp, "inference.gateway.scope")
-    if scope:
-        form["scope"] = scope
+    form = {"grant_type": "client_credentials", "scope": scope}
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     if (get(inp, "inference.gateway.clientAuth") or "basic") == "basic":
         basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
@@ -472,10 +533,8 @@ def check_live_gateway(inp):
 
     endpoint = (get(inp, "inference.endpoint") or "").rstrip("/")
     chat = get(inp, "inference.chatDeployment")
-    url = f"{endpoint}/deployments/{chat}/chat/completions"
-    api_version = get(inp, "inference.gateway.apiVersion")
-    if api_version:
-        url = f"{url}?api-version={urllib.parse.quote(api_version)}"
+    embed = get(inp, "inference.embeddingDeployment")
+    query = f"?api-version={urllib.parse.quote(api_version)}"
     call_headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}",
@@ -489,33 +548,44 @@ def check_live_gateway(inp):
         header = get(inp, "inference.gateway.subscriptionHeader") or "Ocp-Apim-Subscription-Key"
         call_headers[header] = subscription_key
 
+    # The proxy sends the deployment as `model` and budgets with max_tokens, renaming it
+    # only for a gpt-5-family model. A probe body that differs proves nothing about it.
+    budget = "max_completion_tokens" if _is_gpt5_family(chat) else "max_tokens"
+    chat_url = f"{endpoint}/deployments/{chat}/chat/completions{query}"
     payload = json.dumps(
-        {"messages": [{"role": "user", "content": "ping"}], "max_completion_tokens": 1}
+        {"model": chat, "messages": [{"role": "user", "content": "ping"}], budget: 1}
     ).encode()
-    status, body = _http_post(url, payload, call_headers)
-    if status == 200:
-        ok(f"chat completion through the gateway succeeded ({url})")
-    elif status == 0:
-        fail(
-            f"could not reach the gateway {url} at all: {body[:200]}. The token minted, "
-            "so the credentials are fine — this host needs a firewall/DNS allowance to "
-            "the gateway (a separate one from the authorization server), or run this "
-            "check from a host that has it."
-        )
-    elif status == 401:
-        fail(
-            f"gateway returned 401 for {url}: {body[:200]}. The token minted, so this "
-            "is the second credential (the subscription key) or an authorization "
-            "scope that does not cover this product."
-        )
-    elif status == 404:
-        fail(
-            f"gateway returned 404 for {url}: {body[:200]}. inference.endpoint must be "
-            "the gateway base up to but NOT including /deployments/, and the "
-            "deployment name must match the gateway's own route."
-        )
+    status, body = _http_post(chat_url, payload, call_headers)
+    if not _gateway_call_failed(chat_url, status, body):
+        ok(f"chat completion through the gateway succeeded ({chat_url}, {budget})")
+
+    embed_url = f"{endpoint}/deployments/{embed}/embeddings{query}"
+    embed_body = {"model": embed, "input": "ping"}
+    want_dim = get(inp, "embedding.dimension") if _request_dimensions(inp, embed) else None
+    if want_dim is not None:
+        embed_body["dimensions"] = want_dim
+    status, body = _http_post(embed_url, json.dumps(embed_body).encode(), call_headers)
+    if _gateway_call_failed(embed_url, status, body):
+        return
+    ok(f"embedding through the gateway succeeded ({embed_url})")
+    if want_dim is None:
+        return
+    try:
+        vector = json.loads(body)["data"][0]["embedding"]
+    except (ValueError, TypeError, KeyError, IndexError):
+        fail(f"embedding response from {embed_url} carries no data[0].embedding: {body[:200]}")
+        return
+    if len(vector) == int(want_dim):
+        ok(f"gateway honored dimensions={want_dim} (returned a {len(vector)}-wide vector)")
     else:
-        fail(f"gateway returned HTTP {status} for {url}: {body[:200]}")
+        fail(
+            f"asked the gateway for dimensions={want_dim} and got a {len(vector)}-wide "
+            "vector: the request was dropped somewhere on the path, so every embedding "
+            "would be the wrong width for the index. Either the gateway strips the "
+            "field or the deployment is not Matryoshka-capable — set "
+            "embedding.requestDimensions: false and embedding.dimension to the width "
+            "the model actually emits."
+        )
 
 
 def _http_post(url, data, headers, timeout=20):
@@ -989,8 +1059,8 @@ def main():
                     help="dir with the generated overlays to cross-check (default: generated/)")
     ap.add_argument("--live", action="store_true", help="also run cloud/cluster checks (az/kubectl)")
     ap.add_argument("--live-gateway", action="store_true",
-                    help="also mint a gateway token and make one real chat call "
-                         "(needs the client id/secret env vars in this shell)")
+                    help="also mint a gateway token and make one real chat + embedding "
+                         "call (needs the client id/secret env vars in this shell)")
     args = ap.parse_args()
 
     global _gen_dir

@@ -198,10 +198,13 @@ uncomment the `gateway:` block your `customer.yaml` already carries and:
   to the gateway itself: a separate firewall/DNS allowance from the model endpoints.
 
 Validate the credentials before installing with `python3 preflight.py --live-gateway`
-(`install.sh` runs only the static preflight). It mints a token and makes one 1-token chat
-completion through the gateway, reading the client id/secret (and subscription key) from the
-same shell. A wrong secret, an unauthorized scope, or the wrong gateway environment fails here
-in seconds instead of partway through the install.
+(`install.sh` runs only the static preflight). It mints a token, then makes one 1-token chat
+completion and one tiny embedding call through the gateway, reading the client id/secret (and
+subscription key) from the same shell. Both bodies are shaped the way the inference proxy
+shapes them, so what passes here is what the install will send. A wrong secret, an
+unauthorized scope, the wrong gateway environment, an unpublished embeddings route, or a
+gateway that drops the `dimensions` request fails here in seconds instead of partway through
+the install.
 
 ## What preflight checks
 
@@ -225,7 +228,7 @@ Live (`--live`, opt-in, needs `az`/`kubectl` + the `azure.*` inputs):
   credential covers the release service account.
 
 Live gateway (`--live-gateway`, opt-in, makes real HTTP calls): mints a token and makes one
-1-token chat completion through the gateway — see above.
+1-token chat completion plus one tiny embedding call through the gateway — see above.
 
 ## OCI vs local-chart path
 
