@@ -1,0 +1,7 @@
+# Never commit local terraform state, plans, or the operator's real inputs.
+terraform.tfvars
+*.tfstate
+*.tfstate.*
+tfplan
+.terraform/
+.terraform.lock.hcl

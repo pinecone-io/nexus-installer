@@ -1,0 +1,49 @@
+# Copy to terraform.tfvars and adjust. terraform.tfvars is gitignored.
+# Credentials come from the environment: Application Default Credentials
+# (`gcloud auth application-default login`) or GOOGLE_OAUTH_ACCESS_TOKEN.
+
+project = "my-gcp-project"
+region  = "us-central1"
+
+# Naming: resources are <type>-<name_prefix>-<environment>, e.g. gke-nexus-slim-dev.
+# Change environment to stand up another instance (staging/prod) from the same module.
+name_prefix = "nexus-slim"
+environment = "dev"
+
+# Control-plane + node version. Default "1.35" resolves to the highest 1.35.x the channel
+# offers (currently 1.35.6-gke.1641000), which clears the module minimum of 1.35.0-gke.3047000 —
+# below that the GKE Dataplane V2 (Cilium) stale-endpoint bug drops pod/DNS traffic on freshly
+# created nodes. Pin a fuller version only to mirror a customer's target; it must be a fixed build.
+# kubernetes_version = "1.35"
+release_channel = "REGULAR"
+
+node_count        = 1
+node_machine_type = "e2-standard-8"
+
+# Networking: VPC-native. Nodes take the subnet primary range; pods and Services take the two
+# secondary ranges. GKE allocates a /24 of the pod range per node, so the pod range is the
+# density cap — the /16 default holds far more than any node count. The three ranges must not
+# overlap.
+subnet_cidr   = "10.128.0.0/20" # nodes
+pods_cidr     = "10.132.0.0/16" # pods (alias IPs)
+services_cidr = "10.130.0.0/20" # Services
+
+# Storage + Workload Identity (set enable_storage_identity = false to bring your own bucket + GSA).
+enable_storage_identity = true
+# Stem the seven bucket names derive from: <stem>-db plus six <stem>-nexus-* (source,
+# knowledge, archive, traces, snapshots, library); a random suffix is appended for GCS
+# global uniqueness. Supply only the stem. Null -> <name_prefix>-<environment>.
+blob_prefix = "acme"
+
+# Workload Identity binding is automatic — the module binds every blob-accessing SA the chart
+# runs (fixed names; the chart pins fullnameOverride=nexus). Set nothing for a standard install.
+#
+# helm_namespace = "nexus"      # namespace the chart installs into
+#
+# Extra (non-standard) SAs only, appended to the derived set:
+# workload_service_accounts = [
+#   { namespace = "nexus", service_account = "my-extra-sa" },
+# ]
+
+# Optional GCE ingress IP. Off -> validate with `kubectl port-forward svc/nexus-gateway 80:80`.
+# enable_ingress = false

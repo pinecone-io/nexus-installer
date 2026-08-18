@@ -21,13 +21,13 @@ touching nothing.
 | File | What it does |
 |------|--------------|
 | `customer.example.yaml` | The inputs contract. Copy to `customer.yaml` and fill it in. Every field maps one-to-one to what it configures. **Secrets are env-var names, never literals.** |
-| `gen-values.py` | Reads the inputs and emits the Helm overlays (`values.install.yaml`, the storage overlay `values.abs.yaml` or `values.s3.yaml`, `values.self-hosted.yaml`) + `inputs.env`. Deterministic, secret-free. |
+| `gen-values.py` | Reads the inputs and emits the Helm overlays (`values.install.yaml`, the storage overlay `values.abs.yaml`, `values.s3.yaml`, or `values.gcs.yaml`, `values.self-hosted.yaml`) + `inputs.env`. Deterministic, secret-free. |
 | `preflight.py` | Validates the consistency invariants. Static by default (values only, no cloud); `--live` adds cluster/cloud checks. **This is the core value.** |
 | `create-secrets.sh` | Idempotently creates the namespace, the registry pull Secret, and (shared-key only) the storage-key Secret, from env-var references. Never echoes a value. |
 | `install.sh` | Orchestrates preflight → secrets → `helm install`. `--dry-run` renders the full plan without touching anything. |
 | `image-manifest.sh` | Prints the exact images + OCI chart the install pulls (writes `generated/manifest.txt`), which `preflight --live` then verifies. `--copy` mirrors the bundle into your registry from a source Pinecone grants you. |
 | `remint-dbslim.sh` | Local-chart helper for a non-default embedding dimension / fresh index id (see "OCI vs local-chart path"). |
-| `tf-to-inputs.sh` | Emits the storage/identity half of `customer.yaml` from the `aks-slim` or `eks-slim` Terraform outputs (provider auto-detected). |
+| `tf-to-inputs.sh` | Emits the storage/identity half of `customer.yaml` from the `aks-slim`, `eks-slim`, or `gke-slim` Terraform outputs (provider auto-detected). |
 | `support-bundle.sh` | Collects a redacted diagnostic archive to send to Pinecone when something goes wrong (see "Getting support"). |
 | `redact.py` | The redaction pass `support-bundle.sh` runs over everything it collects. |
 
@@ -71,7 +71,12 @@ Before running anything:
 ```bash
 cd install
 cp customer.example.yaml customer.yaml
-$EDITOR customer.yaml                      # fill in ~11 inputs; secrets are env-var NAMES
+
+# Optional — greenfield via a terraform/*-slim module? Print its storage + kubeContext
+# fields to merge into customer.yaml (see "Terraform hand-off"):
+./tf-to-inputs.sh ../terraform/gke-slim   # or aks-slim | eks-slim
+
+$EDITOR customer.yaml                      # fill in the remaining inputs; secrets are env-var NAMES
 
 # Export the secrets the inputs reference (names are your choice, set in customer.yaml):
 export NEXUS_REGISTRY_PASSWORD=...         # registry.passwordEnv
@@ -200,21 +205,27 @@ Making the data-plane dimension a runtime value is a prerequisite for a fully
 OCI-based install at the recommended embedding model; until then the toolkit falls back
 automatically.
 
-## Terraform hand-off (greenfield)
+## Terraform hand-off (greenfield) — optional
 
-If you provisioned the cluster with `terraform/aks-slim` (Azure) or `terraform/eks-slim`
-(AWS), its outputs fill the storage/identity inputs for you:
+If you stood the cluster up with a `terraform/*-slim` module, `tf-to-inputs.sh` prints its
+storage + `kubeContext` fields for `customer.yaml` (auto-detecting the cloud); it only prints, so
+copy the printed `storage:` block and `kubeContext` into `customer.yaml`, replacing the example
+ones:
 
 ```bash
-./tf-to-inputs.sh                       # Azure (default TF dir ../terraform/aks-slim)
-./tf-to-inputs.sh ../terraform/eks-slim # AWS
+./tf-to-inputs.sh ../terraform/aks-slim   # Azure  (default dir; bare ./tf-to-inputs.sh works)
+./tf-to-inputs.sh ../terraform/eks-slim   # AWS
+./tf-to-inputs.sh ../terraform/gke-slim   # GCP
 ```
 
-The provider is auto-detected from the outputs. Azure maps `blob_storage_account →
-storage.account`, `blob_container → storage.containerPrefix`, `workload_identity_client_id
-→ storage.clientId` (defaulting `storage.auth: workload_identity`). AWS maps `bucket_prefix →
-storage.bucketPrefix`, `irsa_role_arn → storage.roleArn`, `region → storage.region` (with
-`storage.provider: s3`). Both map `cluster_name → kubeContext`.
+It fills only the storage/identity half — you still fill `registry.*`, `inference.*`,
+`bundle.*`, and `embedding.*`, and `preflight.py` catches a bad paste before install.
+
+| Module | Fills into `customer.yaml` |
+|---|---|
+| `aks-slim` (Azure) | `storage.provider: abs`, `account`, `containerPrefix`, `auth: workload_identity`, `clientId`; `kubeContext` |
+| `eks-slim` (AWS) | `storage.provider: s3`, `bucketPrefix`, `region`, `roleArn`; `kubeContext` |
+| `gke-slim` (GCP) | `storage.provider: gcs`, `bucketPrefix`, `serviceAccount`, `project`; `kubeContext` (keyless — no region or key) |
 
 ## Where Pinecone takes over (hand-off points)
 

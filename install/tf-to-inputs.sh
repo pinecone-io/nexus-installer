@@ -7,10 +7,12 @@
 # The provider is detected from which outputs the module emits:
 #   aks-slim (Azure) -> blob_storage_account / blob_container / workload_identity_client_id
 #   eks-slim (AWS)   -> db_bucket / nexus_buckets / irsa_role_arn / region
+#   gke-slim (GCP)   -> db_bucket / nexus_buckets / gsa_email / project
 #
 # Usage:
 #   ./tf-to-inputs.sh [TF_DIR]      # default TF_DIR = ../terraform/aks-slim
 #                                   #   AWS: ./tf-to-inputs.sh ../terraform/eks-slim
+#                                   #   GCP: ./tf-to-inputs.sh ../terraform/gke-slim
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
@@ -31,10 +33,27 @@ def val(k):
     return v if v not in (None, "") else None
 
 cluster = val("cluster_name")
+# gke-slim uses a dedicated kube_context output (get-credentials writes gke_<proj>_<region>_<name>);
+# eks-slim aliases the context to the cluster name.
+kube_context = val("kube_context") or cluster
 
-# eks-slim (AWS / s3) is distinguished by bucket_prefix; aks-slim (Azure / abs) by the account.
+# gke-slim (GCP / gcs) is distinguished by gsa_email; eks-slim (AWS / s3) by bucket_prefix
+# alone; aks-slim (Azure / abs) by the account. Check GCP first — it also emits bucket_prefix.
 bucket_prefix = val("bucket_prefix")
+gsa_email = val("gsa_email")
 account = val("blob_storage_account")
+
+if gsa_email is not None:
+    project = val("project")
+    print("# --- generated from gke-slim terraform outputs; merge into customer.yaml ---")
+    if kube_context:
+        print(f"kubeContext: {kube_context}")
+    print("storage:")
+    print("  provider: gcs")
+    if bucket_prefix: print(f"  bucketPrefix: {bucket_prefix}")
+    print(f"  serviceAccount: {gsa_email}")
+    if project: print(f"  project: {project}")
+    sys.exit(0)
 
 if bucket_prefix is not None:
     region = val("region")
