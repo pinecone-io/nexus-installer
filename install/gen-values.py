@@ -89,6 +89,15 @@ def opt(d, path, default=None):
     return cur
 
 
+def int_opt(d, path, default):
+    """An optional integer input, failing with a clear message on a non-numeric value."""
+    val = opt(d, path, default)
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        die(f"input `{path}` must be an integer, got {val!r}")
+
+
 def container_names(prefix):
     return [f"{prefix}-{s}" for s in CONTAINER_SUFFIXES]
 
@@ -383,7 +392,8 @@ def build_self_hosted_values(inp, dim):
     rerank_model, rerank_base_url = rerank_catalog_entry(rerank_provider, rerank, rerank_endpoint)
 
     gw = gateway_spec(inp)
-    if gw and ("/deployments/" in endpoint or endpoint.rstrip("/").endswith("/deployments")):
+    lowered = endpoint.lower()
+    if gw and ("/deployments/" in lowered or lowered.rstrip("/").endswith("/deployments")):
         die(
             f"inference.endpoint={endpoint!r} already contains /deployments/. With a "
             "gateway configured it must be the gateway base up to but NOT including "
@@ -404,8 +414,8 @@ def build_self_hosted_values(inp, dim):
         # api_style openai does no model-registry lookup, so the token budgets the
         # proxy would otherwise introspect have to be stated. They are properties of
         # the deployment behind the gateway, which only the customer knows.
-        context_window = int(opt(inp, "inference.contextWindow", 272000))
-        max_output_tokens = int(opt(inp, "inference.maxOutputTokens", 16384))
+        context_window = int_opt(inp, "inference.contextWindow", 272000)
+        max_output_tokens = int_opt(inp, "inference.maxOutputTokens", 16384)
         llm_models = {
             f"chat-{t}": {
                 "api_style": "openai",
@@ -554,8 +564,6 @@ def build_inputs_env(inp, dim, outdir):
         "BUNDLE_TAG": str(req(inp, "bundle.tag")),
         "CHART_VERSION": f"0.0.0-bundle.{req(inp, 'bundle.tag')}",
         "RERANK_KEY_ENV": req(inp, "inference.rerankKeyEnv"),
-        "LLM_KEY_REF": LLM_KEY_REF,
-        "EMBED_KEY_REF": EMBED_KEY_REF,
         "RERANK_KEY_REF": RERANK_KEY_REF,
         "STATIC_INDEX_ID": idx_id,
         "EMBED_DIMENSION": str(dim),
@@ -613,6 +621,8 @@ def build_inputs_env(inp, dim, outdir):
     else:
         env["LLM_KEY_ENV"] = req(inp, "inference.llmKeyEnv")
         env["EMBEDDING_KEY_ENV"] = req(inp, "inference.embeddingKeyEnv")
+        env["LLM_KEY_REF"] = LLM_KEY_REF
+        env["EMBED_KEY_REF"] = EMBED_KEY_REF
 
     path = os.path.join(outdir, "inputs.env")
     with open(path, "w", encoding="utf-8") as f:
