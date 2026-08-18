@@ -337,6 +337,9 @@ def build_inputs_env(inp, dim, outdir):
     baked_id = req(inp, "bundle.bakedIndexId")
     # Path decision: OCI cannot override the baked data-plane dimension or index id.
     oci_ok = (int(dim) == baked_dim) and (idx_id == baked_id)
+    bundle_tag = str(req(inp, "bundle.tag"))
+    # An oci-stable-* value is the chart's own OCI tag; a bare id is the version suffix.
+    chart_version = bundle_tag if bundle_tag.startswith("oci-stable-") else f"0.0.0-bundle.{bundle_tag}"
     env = {
         "KUBE_CONTEXT": req(inp, "kubeContext"),
         "REGISTRY_BASE": req(inp, "registry.base"),
@@ -344,8 +347,8 @@ def build_inputs_env(inp, dim, outdir):
         "REGISTRY_USERNAME": req(inp, "registry.username"),
         "REGISTRY_PASSWORD_ENV": req(inp, "registry.passwordEnv"),
         "PULL_SECRET_NAME": opt(inp, "registry.pullSecretName", "acr-pull"),
-        "BUNDLE_TAG": str(req(inp, "bundle.tag")),
-        "CHART_VERSION": f"0.0.0-bundle.{req(inp, 'bundle.tag')}",
+        "BUNDLE_TAG": bundle_tag,
+        "CHART_VERSION": chart_version,
         "LLM_KEY_ENV": req(inp, "inference.llmKeyEnv"),
         "EMBEDDING_KEY_ENV": req(inp, "inference.embeddingKeyEnv"),
         "RERANK_KEY_ENV": req(inp, "inference.rerankKeyEnv"),
