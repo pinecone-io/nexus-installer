@@ -155,8 +155,11 @@ configures. The important ones:
   needs `clientId`, the user-assigned managed identity).
 - `registry.base` — the flat base every image and the chart live under; becomes the
   chart's single `global.image.registry` knob.
-- `bundle.tag` — identifies the release; it is the OCI chart version suffix
-  (`0.0.0-bundle.<tag>`).
+- `bundle.tag` — identifies the release. A promoted `oci-stable-<id>` (immutable) runs the
+  whole stack at that one tag — you mirror a single tag per image and every pod visibly runs
+  it; the chart resolves to `0.0.0-bundle.oci-stable-<id>`. A raw build id is the chart version
+  suffix (`0.0.0-bundle.<id>`) and keeps each image on its baked tag. Use `oci-stable-latest`
+  for discovery only (it moves — don't pin an install to it).
 
 Secrets never appear here. A `*Env` field names the environment variable that holds the
 secret; the tools read it from your shell and never log it.

@@ -40,12 +40,13 @@ registry:
   pullSecretName: acr-pull               # [DEFAULT] name of the pull Secret to create + consume
 
 # --- Image bundle ------------------------------------------------------------
-# `tag` is the OCI chart version suffix (chart version = 0.0.0-bundle.<tag>), NOT an
-# image tag — the chart bakes the nexus/DB/FoundationDB image tags in at build time,
-# independent of this suffix (image-manifest.sh reads them from the render). Pinecone
-# hands you this value with the bundle — paste it, don't invent it.
+# `tag` selects the release; Pinecone hands you the value — paste it, don't invent it.
+# A promoted oci-stable-<id> (immutable) runs the whole stack at that ONE tag: you mirror a
+# single tag per image and every pod runs it. A raw build id (main-<sha>) is the chart version
+# suffix (0.0.0-bundle.<id>) and leaves each image on its baked tag. oci-stable-latest is
+# discovery-only — it moves, so don't pin an install to it.
 bundle:
-  tag: main-718ee69                      # [PINECONE] nexus bundle tag == OCI chart version suffix
+  tag: oci-stable-<id>                    # [PINECONE] promoted immutable release id (couples the stack); paste what Pinecone gives you
   # The data plane BAKES these into the published OCI chart at build time and the
   # OCI install path cannot override them (see README "OCI vs local-chart path").
   # Pinecone ships these two values with the bundle. If your embedding dimension

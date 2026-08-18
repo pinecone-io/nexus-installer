@@ -107,18 +107,24 @@ def dump(obj, path, header):
 
 def build_install_values(inp, dim):
     idx_id = req(inp, "staticIndex.id")
+    image = {
+        "registry": req(inp, "registry.base"),
+        "pullSecrets": [{"name": opt(inp, "registry.pullSecretName", "acr-pull")}],
+    }
+    # An oci-stable-<id> is aliased onto every image, so pin the whole stack to it; a bare
+    # sha keeps the chart's per-image pins.
+    bundle_tag = str(req(inp, "bundle.tag"))
+    if bundle_tag == "oci-stable-latest":
+        die("bundle.tag oci-stable-latest is a moving tag (discovery only) — pin an immutable oci-stable-<id> for an install")
+    if bundle_tag.startswith("oci-stable-"):
+        image["tag"] = bundle_tag
     values = {
         "staticIndex": {
             "id": idx_id,
             "name": opt(inp, "staticIndex.name", "nexus-hybrid"),
             "dimension": dim,
         },
-        "global": {
-            "image": {
-                "registry": req(inp, "registry.base"),
-                "pullSecrets": [{"name": opt(inp, "registry.pullSecretName", "acr-pull")}],
-            }
-        },
+        "global": {"image": image},
         "nexus": {
             "config": {
                 "host": {"name": opt(inp, "host.name", "Nexus")},
