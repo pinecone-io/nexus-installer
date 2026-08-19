@@ -49,7 +49,9 @@ import urllib.parse
 import urllib.request
 
 PYYAML_HINT = (
-    "PyYAML is not installed. From the install/ directory, run:\n"
+    "PyYAML is not installed. The gateway credential check alone runs without it:\n"
+    "  python3 preflight.py -f customer.yaml --only-live-gateway\n"
+    "For the full preflight, from the install/ directory:\n"
     "  python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
 )
 
