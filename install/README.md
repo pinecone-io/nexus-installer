@@ -181,14 +181,16 @@ uncomment the `gateway:` block your `customer.yaml` already carries and:
 - `inference.endpoint` becomes the **gateway base — the part before
   `/deployments/<deployment>`**, which the generator appends itself. This is the one value to
   get right; a base that already spells out the deployment path 404s.
-- `inference.llmKeyEnv` / `embeddingKeyEnv` are unused on this path. You supply the OAuth2
+- `inference.llmKeyEnv` / `embeddingKeyEnv` are unused on this path. The inference proxy
+  authenticates with an OAuth2 client-credentials grant (RFC 6749 §4.4) — you supply the
   client id and secret (`gateway.clientIdEnv` / `clientSecretEnv`) and, if your gateway
-  requires one, its subscription key (`gateway.subscriptionKeyEnv`). The short-lived bearer
-  token is minted and refreshed by the inference proxy — you never supply a token.
-- `gateway.scope` and `gateway.apiVersion` are **required**. A `client_credentials` request
-  that carries no scope is refused by the authorization server (Okta answers
-  `400 invalid_scope`), and the gateway rejects a call that arrives without
-  `?api-version=`. `gen-values.py` fails rather than emit a catalog that cannot work.
+  requires one, its subscription key (`gateway.subscriptionKeyEnv`). Basic client
+  authentication base64s the credentials as-is (the ecosystem convention), so prefer
+  URL-safe characters in the secret.
+- `gateway.scope` and `gateway.apiVersion` are **required**: a token request carrying no
+  scope is refused by the authorization server (Okta answers `400 invalid_scope`), and the
+  gateway rejects a call that arrives without `?api-version=`. `gen-values.py` fails rather
+  than emit a catalog that cannot work.
 - **Rerank is unaffected**: it keeps `inference.rerankEndpoint` + `rerankKeyEnv` and its own
   static key.
 - Set `inference.contextWindow` / `inference.maxOutputTokens` — this path does not introspect
@@ -198,13 +200,12 @@ uncomment the `gateway:` block your `customer.yaml` already carries and:
   to the gateway itself: a separate firewall/DNS allowance from the model endpoints.
 
 Validate the credentials before installing with `python3 preflight.py --live-gateway`
-(`install.sh` runs only the static preflight). It mints a token, then makes one 1-token chat
-completion and one tiny embedding call through the gateway, reading the client id/secret (and
-subscription key) from the same shell. Both bodies are shaped the way the inference proxy
-shapes them, so what passes here is what the install will send. A wrong secret, an
-unauthorized scope, the wrong gateway environment, an unpublished embeddings route, or a
-gateway that drops the `dimensions` request fails here in seconds instead of partway through
-the install.
+(`install.sh` runs only the static preflight). Reading the client id/secret (and subscription
+key) from the same shell, it mints a token and makes one 1-token chat completion plus one tiny
+embedding call through the gateway, with both bodies shaped the way the inference proxy shapes
+them. So a wrong secret, an unauthorized scope, the wrong gateway environment, an unpublished
+embeddings route, or a gateway that drops the `dimensions` request fails here in seconds
+instead of partway through the install.
 
 ## What preflight checks
 

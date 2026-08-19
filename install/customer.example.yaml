@@ -123,9 +123,9 @@ inference:
   # goes through an API-management front door instead. Uncomment the block and:
   #   - `endpoint` above becomes the GATEWAY base (the part before /deployments/...),
   #     e.g. https://gateway.dev.acme.com/df/genai/sit
-  #   - llmKeyEnv / embeddingKeyEnv become unused: the per-request credential is an
-  #     OAuth2 token the inference proxy mints and refreshes itself. What you supply
-  #     is the long-lived client id/secret behind it.
+  #   - llmKeyEnv / embeddingKeyEnv become unused: the inference proxy authenticates
+  #     with an OAuth2 client-credentials grant (RFC 6749 §4.4), using the long-lived
+  #     client id/secret you supply below.
   #   - rerank is unaffected and still uses rerankEndpoint + rerankKeyEnv.
   # Verify it before installing: python3 preflight.py --live-gateway
   #
@@ -133,6 +133,7 @@ inference:
   #   tokenUrl: https://acme.okta.com/oauth2/aus1abc/v1/token   # [YOURS] token endpoint
   #   clientIdEnv: NEXUS_GATEWAY_CLIENT_ID                      # [YOURS] env var holding the client id
   #   clientSecretEnv: NEXUS_GATEWAY_CLIENT_SECRET              # [YOURS] env var holding the client secret
+  #     Basic client authentication base64s the credentials as-is (the ecosystem convention), so prefer URL-safe characters in the secret.
   #   scope: genai.invoke                    # [YOURS] REQUIRED — a token request with no scope is refused (400 invalid_scope)
   #   clientAuth: basic                      # [DEFAULT] basic | post -- how the client authenticates to the token endpoint
   #   subscriptionKeyEnv: NEXUS_GATEWAY_SUBSCRIPTION_KEY  # [OPTIONAL] env var holding the gateway's own key
