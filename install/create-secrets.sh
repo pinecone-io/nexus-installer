@@ -7,8 +7,8 @@
 #   - the registry pull Secret (docker-registry)
 #   - the storage-key Secret (shared_key auth only)
 #
-# Model provider keys are NOT created here — they are injected at install time via
-# --set (install.sh); the nexus chart materializes them.
+# Model provider keys are NOT created here — install.sh passes them in a temp values
+# file at install time; the nexus chart materializes them.
 #
 # Usage: ./create-secrets.sh                 # applies
 #        ./create-secrets.sh --dry-run       # prints what it would do, touches nothing

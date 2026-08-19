@@ -9,12 +9,12 @@ every field) and emits, into the output dir (default install/generated/):
   values.abs.yaml         Azure Blob overlay: blob.* + global.blob.* + the db-slim
                           data-dir overlay + nexus.config.cloud=azure.
   values.self-hosted.yaml self-hosted config profile + the inference catalog + tiers +
-                          empty providerKeys stubs (real keys are --set at install).
+                          empty providerKeys stubs (real keys are injected at install).
   inputs.env              non-secret scalars install.sh / image-manifest.sh / create-secrets.sh
                           need, so bash needs no YAML parser. Contains NO secrets.
 
 Deterministic and secret-free: no key material is ever read or written here — the
-catalog carries api_key_ref names only, and install.sh injects the values via --set.
+catalog carries api_key_ref names only, and install.sh injects the values at install time.
 
 Style follows the chart's gen-dbslim-values.py (python3 + PyYAML).
 
@@ -24,6 +24,7 @@ import argparse
 import os
 import shlex
 import sys
+import urllib.parse
 
 try:
     import yaml
@@ -52,6 +53,15 @@ LLM_KEY_REF = "llm-key"
 EMBED_KEY_REF = "embedding-key"
 RERANK_KEY_REF = "rerank-key"
 
+# Gateway posture (inference.gateway): the chat/embedding credential is a token the
+# proxy mints per refresh window, so what install.sh injects is the long-lived OAuth2
+# client plus the gateway's static subscription key.
+GATEWAY_CREDENTIAL = "gateway"
+GATEWAY_CLIENT_ID_REF = "gateway-client-id"
+GATEWAY_CLIENT_SECRET_REF = "gateway-client-secret"
+GATEWAY_SUBSCRIPTION_KEY_REF = "gateway-subscription-key"
+DEFAULT_SUBSCRIPTION_HEADER = "Ocp-Apim-Subscription-Key"
+
 
 def die(msg):
     sys.stderr.write(f"gen-values: error: {msg}\n")
@@ -77,6 +87,15 @@ def opt(d, path, default=None):
             return default
         cur = cur[part]
     return cur
+
+
+def int_opt(d, path, default):
+    """An optional integer input, failing with a clear message on a non-numeric value."""
+    val = opt(d, path, default)
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        die(f"input `{path}` must be an integer, got {val!r}")
 
 
 def container_names(prefix):
@@ -282,6 +301,85 @@ def rerank_catalog_entry(provider, deployment, endpoint):
     die(f"inference.rerankProvider must be 'cohere' or 'azure_ai', got {provider!r}")
 
 
+def gateway_spec(inp):
+    """The inference.gateway block, or None for the direct-to-provider posture."""
+    inference = inp.get("inference")
+    if not isinstance(inference, dict) or "gateway" not in inference:
+        return None
+    if not inference["gateway"]:
+        die(
+            "inference.gateway is present but empty. Either fill it in (tokenUrl, "
+            "clientIdEnv, clientSecretEnv, scope, apiVersion at minimum) or remove "
+            "the `gateway:` line: "
+            "an empty block would install the direct-to-provider catalog against what "
+            "inference.endpoint now spells as a gateway base, and chat + embedding "
+            "would fail at runtime. If you uncommented `gateway:` in customer.yaml, "
+            "uncomment its fields too."
+        )
+    key_env = opt(inp, "inference.gateway.subscriptionKeyEnv", "")
+    header = opt(inp, "inference.gateway.subscriptionHeader", None)
+    if header and not key_env:
+        die(
+            "inference.gateway.subscriptionHeader is set but "
+            "inference.gateway.subscriptionKeyEnv is not, so no subscription key would "
+            "be sent and the gateway would reject every call. Set subscriptionKeyEnv to "
+            "the env var holding the key, or drop subscriptionHeader if your gateway "
+            "needs no key."
+        )
+    scope = str(opt(inp, "inference.gateway.scope", "")).strip()
+    if not scope:
+        die(
+            "inference.gateway.scope is required. A client_credentials request that "
+            "carries no scope is rejected by the authorization server (Okta answers "
+            "HTTP 400 invalid_scope), so the proxy would never mint a token and every "
+            "chat + embedding call would fail. Set it to the scope your gateway client "
+            "is authorized for."
+        )
+    api_version = str(opt(inp, "inference.gateway.apiVersion", "")).strip()
+    if not api_version:
+        die(
+            "inference.gateway.apiVersion is required. The gateway expects the "
+            "?api-version= query param on every call and rejects a request without it, "
+            "so chat + embedding would fail at runtime. Set it to the version the "
+            "gateway publishes (e.g. 2025-01-01-preview)."
+        )
+    spec = {
+        "token_url": req(inp, "inference.gateway.tokenUrl"),
+        "client_id_env": req(inp, "inference.gateway.clientIdEnv"),
+        "client_secret_env": req(inp, "inference.gateway.clientSecretEnv"),
+        "scope": scope,
+        "client_auth": opt(inp, "inference.gateway.clientAuth", "basic"),
+        "subscription_key_env": key_env,
+        "subscription_header": header or DEFAULT_SUBSCRIPTION_HEADER,
+        "api_version": api_version,
+    }
+    if spec["client_auth"] not in ("basic", "post"):
+        die(f"inference.gateway.clientAuth must be basic or post, got {spec['client_auth']!r}")
+    if not spec["token_url"].startswith(("http://", "https://")):
+        die("inference.gateway.tokenUrl must be an absolute http(s) URL")
+    return spec
+
+
+def cleartext_token_url_host(token_url):
+    """The non-loopback host of an http:// token URL, else "" (nothing to warn about)."""
+    if not token_url.startswith("http://"):
+        return ""
+    host = urllib.parse.urlsplit(token_url).hostname or ""
+    if host in ("localhost", "127.0.0.1", "::1") or host.startswith("127."):
+        return ""
+    return host
+
+
+def _gateway_model_extras(gw):
+    """Fields every gateway-fronted model entry carries."""
+    extras = {"credential_ref": GATEWAY_CREDENTIAL, "api_version": gw["api_version"]}
+    if gw["subscription_key_env"]:
+        extras["extra_header_refs"] = {
+            gw["subscription_header"]: GATEWAY_SUBSCRIPTION_KEY_REF
+        }
+    return extras
+
+
 def build_self_hosted_values(inp, dim):
     endpoint = req(inp, "inference.endpoint")
     rerank_endpoint = req(inp, "inference.rerankEndpoint")
@@ -293,30 +391,78 @@ def build_self_hosted_values(inp, dim):
     rerank_provider = opt(inp, "inference.rerankProvider", "cohere")
     rerank_model, rerank_base_url = rerank_catalog_entry(rerank_provider, rerank, rerank_endpoint)
 
+    gw = gateway_spec(inp)
+    lowered = endpoint.lower()
+    if gw and ("/deployments/" in lowered or lowered.rstrip("/").endswith("/deployments")):
+        die(
+            f"inference.endpoint={endpoint!r} already contains /deployments/. With a "
+            "gateway configured it must be the gateway base up to but NOT including "
+            "/deployments/ — the generator appends /deployments/<deployment> itself, so "
+            f"this would produce base_url {endpoint.rstrip('/')}/deployments/{chat}, "
+            "which the gateway answers with a 404 at runtime. Trim everything from "
+            "/deployments onward."
+        )
+
     # the proxy requires each tier to resolve to a distinct model ref
     tier_labels = {"lite": "Chat (lite)", "standard": "Chat (standard)", "pro": "Chat (pro)"}
-    llm_models = {
-        f"chat-{t}": {
-            "api_style": "litellm",
-            "model": f"azure/{chat}",
-            "base_url": endpoint,
-            "api_key_ref": LLM_KEY_REF,
-            "label": lbl,
-            "provider": "azure-openai",
-            "max_retries": 2,
+    if gw:
+        # api_style openai sends the path exactly as base_url spells it. litellm's
+        # `azure/` provider would insert /openai/deployments/, which an APIM front
+        # door does not serve, and its registry would reject a deployment name it
+        # does not know.
+        extras = _gateway_model_extras(gw)
+        # api_style openai does no model-registry lookup, so the token budgets the
+        # proxy would otherwise introspect have to be stated. They are properties of
+        # the deployment behind the gateway, which only the customer knows.
+        context_window = int_opt(inp, "inference.contextWindow", 272000)
+        max_output_tokens = int_opt(inp, "inference.maxOutputTokens", 16384)
+        llm_models = {
+            f"chat-{t}": {
+                "api_style": "openai",
+                "model": chat,
+                "base_url": f"{endpoint.rstrip('/')}/deployments/{chat}",
+                "label": lbl,
+                "provider": "gateway",
+                "max_retries": 2,
+                "context_window": context_window,
+                "max_output_tokens": max_output_tokens,
+                **extras,
+            }
+            for t, lbl in tier_labels.items()
         }
-        for t, lbl in tier_labels.items()
-    }
-    embed_entry = {
-        "api_style": "litellm",
-        "model": f"azure/{embed}",
-        "base_url": endpoint,
-        "api_key_ref": EMBED_KEY_REF,
-        "dimension": dim,
-        "max_retries": 2,
-        "max_input_chars": 8000,
-        "max_batch_size": 96,
-    }
+        embed_entry = {
+            "api_style": "openai",
+            "model": embed,
+            "base_url": f"{endpoint.rstrip('/')}/deployments/{embed}",
+            "dimension": dim,
+            "max_retries": 2,
+            "max_input_chars": 8000,
+            "max_batch_size": 96,
+            **extras,
+        }
+    else:
+        llm_models = {
+            f"chat-{t}": {
+                "api_style": "litellm",
+                "model": f"azure/{chat}",
+                "base_url": endpoint,
+                "api_key_ref": LLM_KEY_REF,
+                "label": lbl,
+                "provider": "azure-openai",
+                "max_retries": 2,
+            }
+            for t, lbl in tier_labels.items()
+        }
+        embed_entry = {
+            "api_style": "litellm",
+            "model": f"azure/{embed}",
+            "base_url": endpoint,
+            "api_key_ref": EMBED_KEY_REF,
+            "dimension": dim,
+            "max_retries": 2,
+            "max_input_chars": 8000,
+            "max_batch_size": 96,
+        }
     # Matryoshka: ask the provider for `dim`-wide vectors instead of the model's native
     # width (needs a bundle whose proxy honors it). Defaults on for a
     # text-embedding-3-* model so the recommended install truncates to the baked width;
@@ -341,7 +487,40 @@ def build_self_hosted_values(inp, dim):
             # never set api_version on a litellm rerank model — the proxy rejects it.
         }
     }
-    return {
+    provider_keys = {RERANK_KEY_REF: ""}
+    credential_entry = None
+    if gw:
+        credential_entry = {
+            "auth_style": "oauth2_client_credentials",
+            "token_url": gw["token_url"],
+            "client_id_ref": GATEWAY_CLIENT_ID_REF,
+            "client_secret_ref": GATEWAY_CLIENT_SECRET_REF,
+            "client_auth": gw["client_auth"],
+            "scope": gw["scope"],
+        }
+        provider_keys[GATEWAY_CLIENT_ID_REF] = ""
+        provider_keys[GATEWAY_CLIENT_SECRET_REF] = ""
+        if gw["subscription_key_env"]:
+            provider_keys[GATEWAY_SUBSCRIPTION_KEY_REF] = ""
+        # The gateway publishes no rerank route yet, so rerank keeps its own
+        # endpoint and static key. Say so rather than let it look configured.
+        sys.stderr.write(
+            "gen-values: note: inference.gateway applies to chat + embedding only; "
+            "rerank still uses inference.rerankEndpoint with its own key.\n"
+        )
+        cleartext_host = cleartext_token_url_host(gw["token_url"])
+        if cleartext_host:
+            sys.stderr.write(
+                "gen-values: note: inference.gateway.tokenUrl is http:// (host "
+                f"{cleartext_host}), so the OAuth2 client secret crosses the network in "
+                "cleartext on every token refresh. Use https:// unless this is a local "
+                "stand-in gateway.\n"
+            )
+    else:
+        provider_keys[LLM_KEY_REF] = ""
+        provider_keys[EMBED_KEY_REF] = ""
+
+    values = {
         "nexus": {
             "configProfiles": "self-hosted",
             "inference": {
@@ -355,11 +534,16 @@ def build_self_hosted_values(inp, dim):
                     "embedding": embed,
                     "rerank": "rerank",
                 },
-                # Empty stubs; real values are --set at install (never written here).
-                "providerKeys": {LLM_KEY_REF: "", EMBED_KEY_REF: "", RERANK_KEY_REF: ""},
+                # Empty stubs; real values are injected at install (never written here).
+                "providerKeys": provider_keys,
             },
         }
     }
+    if gw:
+        values["nexus"]["inference"]["credentials"] = {
+            GATEWAY_CREDENTIAL: credential_entry,
+        }
+    return values
 
 
 def build_inputs_env(inp, dim, outdir):
@@ -379,11 +563,7 @@ def build_inputs_env(inp, dim, outdir):
         "PULL_SECRET_NAME": opt(inp, "registry.pullSecretName", "acr-pull"),
         "BUNDLE_TAG": str(req(inp, "bundle.tag")),
         "CHART_VERSION": f"0.0.0-bundle.{req(inp, 'bundle.tag')}",
-        "LLM_KEY_ENV": req(inp, "inference.llmKeyEnv"),
-        "EMBEDDING_KEY_ENV": req(inp, "inference.embeddingKeyEnv"),
         "RERANK_KEY_ENV": req(inp, "inference.rerankKeyEnv"),
-        "LLM_KEY_REF": LLM_KEY_REF,
-        "EMBED_KEY_REF": EMBED_KEY_REF,
         "RERANK_KEY_REF": RERANK_KEY_REF,
         "STATIC_INDEX_ID": idx_id,
         "EMBED_DIMENSION": str(dim),
@@ -421,6 +601,28 @@ def build_inputs_env(inp, dim, outdir):
         env["BUCKET_PREFIX"] = req(inp, "storage.bucketPrefix")
         env["BLOB_REGION"] = req(inp, "storage.region")
         env["IRSA_ROLE_ARN"] = req(inp, "storage.roleArn")
+
+    # Which credentials install.sh has to resolve depends on the posture: the gateway
+    # one has no per-provider key at all, only the OAuth2 client and the gateway's
+    # subscription key.
+    gw = gateway_spec(inp)
+    env["GATEWAY_ENABLED"] = "1" if gw else "0"
+    if gw:
+        env["GATEWAY_CREDENTIAL"] = GATEWAY_CREDENTIAL
+        env["GATEWAY_TOKEN_URL"] = gw["token_url"]
+        env["GATEWAY_CLIENT_ID_ENV"] = gw["client_id_env"]
+        env["GATEWAY_CLIENT_SECRET_ENV"] = gw["client_secret_env"]
+        env["GATEWAY_CLIENT_ID_REF"] = GATEWAY_CLIENT_ID_REF
+        env["GATEWAY_CLIENT_SECRET_REF"] = GATEWAY_CLIENT_SECRET_REF
+        env["GATEWAY_SUBSCRIPTION_KEY_ENV"] = gw["subscription_key_env"]
+        env["GATEWAY_SUBSCRIPTION_KEY_REF"] = (
+            GATEWAY_SUBSCRIPTION_KEY_REF if gw["subscription_key_env"] else ""
+        )
+    else:
+        env["LLM_KEY_ENV"] = req(inp, "inference.llmKeyEnv")
+        env["EMBEDDING_KEY_ENV"] = req(inp, "inference.embeddingKeyEnv")
+        env["LLM_KEY_REF"] = LLM_KEY_REF
+        env["EMBED_KEY_REF"] = EMBED_KEY_REF
 
     path = os.path.join(outdir, "inputs.env")
     with open(path, "w", encoding="utf-8") as f:
@@ -477,7 +679,7 @@ def main():
         build_self_hosted_values(inp, dim),
         os.path.join(args.outdir, "values.self-hosted.yaml"),
         "# GENERATED by gen-values.py — self-hosted profile + inference catalog.\n"
-        "# providerKeys are empty stubs; real keys are --set at install time.\n",
+        "# providerKeys are empty stubs; real keys are injected at install time.\n",
     )
     build_inputs_env(inp, dim, args.outdir)
 
