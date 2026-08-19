@@ -99,8 +99,8 @@ storage:
 # --- Model endpoints (OpenAI-compatible: Azure OpenAI + Azure AI Foundry) -----
 # The proxy validates every model id against LiteLLM's registry at startup, so each must
 # be one LiteLLM maps: chat `gpt-5`, embedding `text-embedding-3-small`, rerank
-# `<rerankProvider>/<rerankDeployment>` (below). Keys are env-var references injected via
-# --set at install (never written to a values file).
+# `<rerankProvider>/<rerankDeployment>` (below). Keys are env-var references injected at
+# install time (never written to a file you keep).
 inference:
   endpoint: https://acme-aoai.cognitiveservices.azure.com        # [YOURS]   chat + embedding base_url
   rerankEndpoint: https://acme-aoai.services.ai.azure.com/providers/cohere  # [YOURS] Foundry Cohere rerank base_url
