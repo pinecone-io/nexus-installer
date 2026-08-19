@@ -32,6 +32,9 @@ kubeContext: aks-acme-nexus              # [YOURS] kubectl context the tools run
 # (`image-manifest.sh --list` prints exactly what must be present). `base` is that
 # flat path and becomes the chart's global.image.registry (the single "where images
 # come from" knob). `server`/`username`/`passwordEnv` build the pull Secret.
+# Point `base` at a registry your cluster can pull from durably — i.e. your own mirror
+# of the bundle. Do not point it straight at Pinecone's registry: those credentials are
+# short-lived, so nodes would fail to re-pull (e.g. on reschedule) once the token expires.
 registry:
   base: acmeacr.azurecr.io/pinecone      # [YOURS]   -> global.image.registry (flat: <base>/<name>:<tag>)
   server: acmeacr.azurecr.io             # [YOURS]   docker-server for the pull Secret
