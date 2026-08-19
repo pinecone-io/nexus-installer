@@ -83,7 +83,7 @@ class _YamlSubset:
                 continue
             indent = len(line) - len(line.lstrip(" "))
             m = cls.KEY.match(line.strip())
-            value = re.split(r"\s+#", m.group(2), 1)[0].strip() if m else ""
+            value = re.split(r"\s+#", m.group(2), maxsplit=1)[0].strip() if m else ""
             if "\t" in raw or not m or value[:1] in ("{", "[", "|", ">", "&", "*", "!"):
                 raise cls.YAMLError(f"line {n} ({line.strip()[:40]!r}) is beyond this "
                                     f"reader. {PYYAML_HINT}")
