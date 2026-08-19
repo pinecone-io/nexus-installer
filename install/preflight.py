@@ -23,7 +23,8 @@ LIVE gateway check (--live-gateway, opt-in, makes real HTTP calls):
     environment, a missing embeddings route, or a gateway that drops the
     `dimensions` request fails here in seconds instead of as 401s after the install.
   - --only-live-gateway runs this check and nothing else, so it needs only the
-    inference/embedding inputs and can be handed to whoever holds the credentials.
+    inference/embedding inputs, only the standard library, and can be handed to
+    whoever holds the credentials.
 
 LIVE checks (--live, opt-in, shells out to az/kubectl):
   - kube context reachable.
@@ -47,13 +48,76 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+PYYAML_HINT = (
+    "PyYAML is not installed. From the install/ directory, run:\n"
+    "  python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+)
+
 try:
     import yaml
 except ModuleNotFoundError:
-    sys.exit(
-        "PyYAML is required but not installed. From the install/ directory, run:\n"
-        "  python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
-    )
+    yaml = None
+
+
+class _YamlSubset:
+    """A stand-in for yaml.safe_load over nested maps of scalars. It backs
+    --only-live-gateway alone, so that check runs on a machine that has the gateway
+    credentials and nothing else — every other mode still requires PyYAML, and anything
+    this cannot read raises rather than yield a half-parsed inputs file.
+    """
+
+    class YAMLError(Exception):
+        pass
+
+    KEY = re.compile(r"^([A-Za-z0-9_.\-]+):(.*)$")
+    WORDS = {"true": True, "yes": True, "on": True, "false": False, "no": False,
+             "off": False, "null": None, "~": None, "": None}
+
+    @classmethod
+    def safe_load(cls, stream):
+        text = stream.read() if hasattr(stream, "read") else stream
+        entries = []
+        for n, raw in enumerate(text.splitlines(), 1):
+            line = raw.rstrip()
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            m = cls.KEY.match(line.strip())
+            value = re.split(r"\s+#", m.group(2), 1)[0].strip() if m else ""
+            if "\t" in raw or not m or value[:1] in ("{", "[", "|", ">", "&", "*", "!"):
+                raise cls.YAMLError(f"line {n} ({line.strip()[:40]!r}) is beyond this "
+                                    f"reader. {PYYAML_HINT}")
+            entries.append((indent, m.group(1), value))
+
+        root = {}
+        stack = [(-1, root)]
+        for i, (indent, key, value) in enumerate(entries):
+            while indent <= stack[-1][0]:
+                stack.pop()
+            nested = value == "" and i + 1 < len(entries) and entries[i + 1][0] > indent
+            stack[-1][1][key] = {} if nested else cls._scalar(value)
+            if nested:
+                stack.append((indent, stack[-1][1][key]))
+        return root
+
+    @classmethod
+    def _scalar(cls, value):
+        if len(value) > 1 and value[0] == value[-1] and value[0] in "\"'":
+            return value[1:-1]
+        if value.lower() in cls.WORDS:
+            return cls.WORDS[value.lower()]
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        try:
+            return float(value)
+        except ValueError:
+            return value
+
+
+if yaml is None:
+    yaml = _YamlSubset
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -1087,6 +1151,8 @@ def main():
     args = ap.parse_args()
     if args.only_live_gateway:
         args.live_gateway = True
+    elif yaml is _YamlSubset:
+        sys.exit(PYYAML_HINT)
 
     global _gen_dir
     _gen_dir = args.gen_dir
@@ -1095,7 +1161,11 @@ def main():
         sys.stderr.write(f"preflight: inputs file not found: {args.inputs}\n")
         sys.exit(2)
     with open(args.inputs, encoding="utf-8") as f:
-        inp = yaml.safe_load(f) or {}
+        try:
+            inp = yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            sys.stderr.write(f"preflight: could not read {args.inputs}: {e}\n")
+            sys.exit(2)
 
     if args.only_live_gateway:
         scope = "  (live gateway only)"
