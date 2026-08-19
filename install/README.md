@@ -205,7 +205,9 @@ key) from the same shell, it mints a token and makes one 1-token chat completion
 embedding call through the gateway, with both bodies shaped the way the inference proxy shapes
 them. So a wrong secret, an unauthorized scope, the wrong gateway environment, an unpublished
 embeddings route, or a gateway that drops the `dimensions` request fails here in seconds
-instead of partway through the install.
+instead of partway through the install. `--only-live-gateway` runs that check alone, so an
+inputs file holding just the `inference` and `embedding` blocks is enough to hand this to
+whoever holds the gateway credentials.
 
 ## What preflight checks
 

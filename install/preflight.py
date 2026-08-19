@@ -22,6 +22,8 @@ LIVE gateway check (--live-gateway, opt-in, makes real HTTP calls):
     inference proxy shapes them — so a wrong client secret / scope / gateway
     environment, a missing embeddings route, or a gateway that drops the
     `dimensions` request fails here in seconds instead of as 401s after the install.
+  - --only-live-gateway runs this check and nothing else, so it needs only the
+    inference/embedding inputs and can be handed to whoever holds the credentials.
 
 LIVE checks (--live, opt-in, shells out to az/kubectl):
   - kube context reachable.
@@ -32,7 +34,7 @@ LIVE checks (--live, opt-in, shells out to az/kubectl):
 
 Exit 0 only if no check FAILs. WARN never fails the run.
 
-Usage: python3 preflight.py [-f customer.yaml] [--live]
+Usage: python3 preflight.py [-f customer.yaml] [--live] [--live-gateway | --only-live-gateway]
 """
 import argparse
 import base64
@@ -1079,7 +1081,12 @@ def main():
     ap.add_argument("--live-gateway", action="store_true",
                     help="also mint a gateway token and make one real chat + embedding "
                          "call (needs the client id/secret env vars in this shell)")
+    ap.add_argument("--only-live-gateway", action="store_true",
+                    help="run the gateway check alone — no static checks, no overlays — for "
+                         "an inputs file that carries only the inference/embedding values")
     args = ap.parse_args()
+    if args.only_live_gateway:
+        args.live_gateway = True
 
     global _gen_dir
     _gen_dir = args.gen_dir
@@ -1090,27 +1097,32 @@ def main():
     with open(args.inputs, encoding="utf-8") as f:
         inp = yaml.safe_load(f) or {}
 
-    print(f"Preflight: {args.inputs}" + ("  (static + live)" if args.live else "  (static)"))
-    check_dimension(inp)
-    check_embedding_width(inp)
-    provider = storage_provider(inp)
-    if provider == "s3":
-        check_buckets_s3(inp)
-    elif provider == "gcs":
-        check_buckets_gcs(inp)
+    if args.only_live_gateway:
+        scope = "  (live gateway only)"
     else:
-        check_containers(inp)
-    check_inference(inp)
-    check_registry(inp)
-    if provider == "s3":
-        check_storage_irsa(inp)
-    elif provider == "gcs":
-        check_storage_gcs(inp)
-    else:
-        check_storage_auth(inp)
-    check_placeholders(inp)
-    if args.live:
-        check_live(inp)
+        scope = "  (static + live)" if args.live else "  (static)"
+    print(f"Preflight: {args.inputs}{scope}")
+    if not args.only_live_gateway:
+        check_dimension(inp)
+        check_embedding_width(inp)
+        provider = storage_provider(inp)
+        if provider == "s3":
+            check_buckets_s3(inp)
+        elif provider == "gcs":
+            check_buckets_gcs(inp)
+        else:
+            check_containers(inp)
+        check_inference(inp)
+        check_registry(inp)
+        if provider == "s3":
+            check_storage_irsa(inp)
+        elif provider == "gcs":
+            check_storage_gcs(inp)
+        else:
+            check_storage_auth(inp)
+        check_placeholders(inp)
+        if args.live:
+            check_live(inp)
     if args.live_gateway:
         check_live_gateway(inp)
 
