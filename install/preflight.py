@@ -136,7 +136,7 @@ def storage_provider(inp):
 def run(cmd):
     """Run a command, returning (rc, stdout). Never raises."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         return p.returncode, p.stdout.strip()
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
         return 1, str(e)
