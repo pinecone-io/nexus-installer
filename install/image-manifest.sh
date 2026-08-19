@@ -241,4 +241,4 @@ mirror_bundle() {
   log "verify: python3 $HERE/preflight.py --live"
 }
 
-[ "$COPY" -eq 1 ] && mirror_bundle
+if [ "$COPY" -eq 1 ]; then mirror_bundle; fi
