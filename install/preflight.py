@@ -496,6 +496,16 @@ def check_live_gateway(inp):
         )
         return
 
+    host = urllib.parse.urlsplit(token_url).hostname or ""
+    if token_url.startswith("http://") and not (
+        host in ("localhost", "::1") or host.startswith("127.")
+    ):
+        warn(
+            f"inference.gateway.tokenUrl is http:// (host {host}), so the client secret "
+            "crosses the network in cleartext on every token refresh. Use https:// unless "
+            "this is a local stand-in gateway."
+        )
+
     form = {"grant_type": "client_credentials", "scope": scope}
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     if (get(inp, "inference.gateway.clientAuth") or "basic") == "basic":
@@ -524,11 +534,19 @@ def check_live_gateway(inp):
         )
         return
     try:
-        token = json.loads(body)["access_token"]
+        payload = json.loads(body)
+        token = payload["access_token"]
     except Exception:
         fail(f"token endpoint returned no access_token: {body[:200]}")
         return
-    ttl = json.loads(body).get("expires_in", "unset")
+    token_type = str(payload.get("token_type") or "").strip()
+    if token_type and token_type.lower() != "bearer":
+        fail(
+            f"token endpoint returned token_type={token_type!r}. The proxy presents the "
+            "token as `Authorization: Bearer`, so only a bearer token works on this path."
+        )
+        return
+    ttl = payload.get("expires_in", "unset")
     ok(f"minted a token (expires_in={ttl}); the proxy refreshes it in-process")
 
     endpoint = (get(inp, "inference.endpoint") or "").rstrip("/")
