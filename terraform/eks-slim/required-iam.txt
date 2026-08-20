@@ -1,0 +1,98 @@
+# IAM actions the eks-slim `terraform apply` performs, checked by check-iam.sh
+# before apply. One action per line; # starts a comment; commented actions are
+# NOT checked. Re-derive from an apply's IAM calls when the module changes.
+#
+# Some actions are inline-authorized at resource create and never surface as
+# their own API call (iam:PassRole, *:CreateTags/TagRole/TagResource,
+# s3:ListBucket/GetBucketLocation) — required nonetheless, so keep them.
+#
+# iam:PassRole is resource-scoped in tight policies (the cluster/node roles);
+# check-iam.sh simulates against "*", so a scoped-but-sufficient policy can show
+# DENIED here — confirm the scope rather than treating it as a failure.
+
+# --- identity / preflight ---
+sts:GetCallerIdentity
+
+# --- VPC + networking (network.tf) ---
+ec2:CreateVpc
+ec2:ModifyVpcAttribute
+ec2:DescribeVpcs
+ec2:DescribeVpcAttribute
+ec2:CreateSubnet
+ec2:ModifySubnetAttribute
+ec2:DescribeSubnets
+ec2:CreateInternetGateway
+ec2:AttachInternetGateway
+ec2:DescribeInternetGateways
+ec2:CreateNatGateway
+ec2:DescribeNatGateways
+ec2:AllocateAddress
+ec2:DescribeAddresses
+ec2:DescribeAddressesAttribute
+ec2:CreateRouteTable
+ec2:CreateRoute
+ec2:AssociateRouteTable
+ec2:DescribeRouteTables
+ec2:DescribeNetworkAcls
+ec2:DescribeAvailabilityZones
+ec2:DescribeSecurityGroups
+ec2:CreateTags
+
+# --- EKS cluster, node group, addons (eks.tf) ---
+eks:CreateCluster
+eks:DescribeCluster
+eks:TagResource
+eks:CreateNodegroup
+eks:DescribeNodegroup
+eks:CreateAddon
+eks:DescribeAddon
+
+# --- IAM roles, policies, OIDC provider (identity.tf, eks.tf) ---
+iam:CreateRole
+iam:GetRole
+iam:TagRole
+iam:ListRolePolicies
+iam:ListAttachedRolePolicies
+iam:PutRolePolicy
+iam:GetRolePolicy
+iam:AttachRolePolicy
+iam:CreateOpenIDConnectProvider
+iam:GetOpenIDConnectProvider
+iam:TagOpenIDConnectProvider
+iam:PassRole
+# EKS's service-linked role is created on the first cluster in an account; a
+# reused account already has it. Keep active — customer first-cluster case needs it.
+iam:CreateServiceLinkedRole
+
+# --- S3 blob-storage buckets (storage.tf) ---
+# The aws_s3_bucket refresh reads the full bucket-config battery on every bucket,
+# so the Get* set below is required even though the module only sets a few.
+s3:CreateBucket
+s3:PutBucketVersioning
+s3:GetBucketVersioning
+s3:PutBucketPublicAccessBlock
+s3:GetBucketPublicAccessBlock
+s3:PutEncryptionConfiguration
+s3:GetEncryptionConfiguration
+s3:PutBucketTagging
+s3:GetBucketTagging
+s3:GetBucketLocation
+s3:ListBucket
+s3:GetBucketAcl
+s3:GetBucketCORS
+s3:GetBucketWebsite
+s3:GetBucketLogging
+s3:GetLifecycleConfiguration
+s3:GetReplicationConfiguration
+s3:GetBucketObjectLockConfiguration
+s3:GetBucketRequestPayment
+s3:GetAccelerateConfiguration
+s3:GetBucketPolicy
+
+# --- Conditional: uncomment for the matching variant ---
+# enable_load_balancer_controller = true (creates the ALB IAM policy):
+#   iam:CreatePolicy
+#   iam:GetPolicy
+#   iam:GetPolicyVersion
+# pinned addon versions (addon_version set, not null):
+#   eks:DescribeAddonVersions
