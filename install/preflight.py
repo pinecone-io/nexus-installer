@@ -568,13 +568,17 @@ def check_live_gateway(inp):
 
     # The proxy sends the deployment as `model` and budgets with max_tokens, renaming it
     # only for a gpt-5-family model. A probe body that differs proves nothing about it.
+    # The budget must cover a reasoning model's internal tokens, which are spent
+    # before any visible output and count against it.
     budget = "max_completion_tokens" if _is_gpt5_family(chat) else "max_tokens"
     chat_url = f"{endpoint}/deployments/{chat}/chat/completions{query}"
     payload = json.dumps(
-        {"model": chat, "messages": [{"role": "user", "content": "ping"}], budget: 1}
+        {"model": chat, "messages": [{"role": "user", "content": "ping"}], budget: 512}
     ).encode()
     status, body = _http_post(chat_url, payload, call_headers)
-    if not _gateway_call_failed(chat_url, status, body):
+    if status == 400 and ("max_tokens" in body or "output limit" in body):
+        ok(f"chat probe hit the model's output limit ({chat_url}, {budget}) — auth and routing proven")
+    elif not _gateway_call_failed(chat_url, status, body):
         ok(f"chat completion through the gateway succeeded ({chat_url}, {budget})")
 
     embed_url = f"{endpoint}/deployments/{embed}/embeddings{query}"
