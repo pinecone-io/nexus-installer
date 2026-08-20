@@ -1,0 +1,82 @@
+# IAM actions the eks-slim `terraform apply` performs, checked by check-iam.sh
+# before apply. Starter list derived from the module's resources; harden it with
+# an iamlive capture of a known-good apply. One action per line; # starts a comment.
+#
+# NOTE: a few actions are resource-scoped in tight policies (notably iam:PassRole,
+# limited to the cluster/node roles). check-iam.sh simulates against "*", so a
+# scoped-but-sufficient policy can show DENIED here — treat those as "confirm the
+# scope", not a hard failure.
+
+# --- identity / preflight ---
+sts:GetCallerIdentity
+
+# --- VPC + networking (network.tf) ---
+ec2:CreateVpc
+ec2:ModifyVpcAttribute
+ec2:DescribeVpcs
+ec2:DescribeVpcAttribute
+ec2:CreateSubnet
+ec2:ModifySubnetAttribute
+ec2:DescribeSubnets
+ec2:CreateInternetGateway
+ec2:AttachInternetGateway
+ec2:DescribeInternetGateways
+ec2:CreateNatGateway
+ec2:DescribeNatGateways
+ec2:AllocateAddress
+ec2:DescribeAddresses
+ec2:CreateRouteTable
+ec2:CreateRoute
+ec2:AssociateRouteTable
+ec2:DescribeRouteTables
+ec2:DescribeAvailabilityZones
+ec2:DescribeAccountAttributes
+ec2:DescribeNetworkInterfaces
+ec2:CreateSecurityGroup
+ec2:AuthorizeSecurityGroupIngress
+ec2:AuthorizeSecurityGroupEgress
+ec2:RevokeSecurityGroupEgress
+ec2:DescribeSecurityGroups
+ec2:CreateTags
+ec2:DescribeTags
+
+# --- EKS cluster, node group, addons (eks.tf) ---
+eks:CreateCluster
+eks:DescribeCluster
+eks:TagResource
+eks:CreateNodegroup
+eks:DescribeNodegroup
+eks:CreateAddon
+eks:DescribeAddon
+eks:DescribeAddonVersions
+
+# --- IAM roles, policies, OIDC provider (identity.tf, eks.tf) ---
+iam:CreateRole
+iam:GetRole
+iam:TagRole
+iam:ListRolePolicies
+iam:ListAttachedRolePolicies
+iam:PutRolePolicy
+iam:GetRolePolicy
+iam:CreatePolicy
+iam:GetPolicy
+iam:GetPolicyVersion
+iam:AttachRolePolicy
+iam:CreateOpenIDConnectProvider
+iam:GetOpenIDConnectProvider
+iam:TagOpenIDConnectProvider
+iam:PassRole
+iam:CreateServiceLinkedRole
+
+# --- S3 blob-storage bucket (storage.tf) ---
+s3:CreateBucket
+s3:PutBucketVersioning
+s3:GetBucketVersioning
+s3:PutBucketPublicAccessBlock
+s3:GetBucketPublicAccessBlock
+s3:PutEncryptionConfiguration
+s3:GetEncryptionConfiguration
+s3:PutBucketTagging
+s3:GetBucketTagging
+s3:GetBucketLocation
+s3:ListBucket

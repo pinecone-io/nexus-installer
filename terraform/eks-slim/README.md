@@ -81,11 +81,29 @@ outputs the **bucket prefix**, the **region**, and the **IRSA role ARN**.
 - Service quota for the chosen instance type in the region.
 - A region offering at least `az_count` AZs (all commercial regions do for the default of 2).
 
+## Pre-apply IAM check
+
+`check-iam.sh` simulates every action this module's `apply` performs against the current
+identity, so a missing permission surfaces up front instead of half-way through `apply` (which
+would leave partially-created infra to unwind). It creates nothing.
+
+```bash
+./check-iam.sh                 # auto-detects the caller; PASS or a list of DENIED actions
+```
+
+The action list lives in `required-iam.txt`. The check needs `iam:SimulatePrincipalPolicy`
+(and, for an assumed-role/SSO session, `iam:GetRole` to resolve the role ARN — or pass
+`--principal-arn`). Note `PowerUserAccess` lacks `iam:SimulatePrincipalPolicy`, so run it as a
+deploy/admin identity. It is **advisory**: the simulator does not evaluate SCPs or a permissions
+boundary, and resource-scoped grants (e.g. `iam:PassRole`) are checked against `*`, so a PASS is
+necessary but not sufficient — a DENIED line is the actionable signal.
+
 ## Usage
 
 ```bash
 export AWS_PROFILE=<your-profile>            # or export AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
 cp terraform.tfvars.example terraform.tfvars # adjust as needed
+./check-iam.sh                               # verify permissions before apply
 terraform init
 terraform plan
 terraform apply
