@@ -1,11 +1,15 @@
 # IAM actions the eks-slim `terraform apply` performs, checked by check-iam.sh
-# before apply. Starter list derived from the module's resources; harden it with
-# an iamlive capture of a known-good apply. One action per line; # starts a comment.
+# before apply. Derived from the module's resources and reconciled against a
+# CloudTrail capture of a real apply (acct 016257615618, us-east-1). One action
+# per line; # starts a comment. Commented actions below are NOT checked.
 #
-# NOTE: a few actions are resource-scoped in tight policies (notably iam:PassRole,
-# limited to the cluster/node roles). check-iam.sh simulates against "*", so a
-# scoped-but-sufficient policy can show DENIED here — treat those as "confirm the
-# scope", not a hard failure.
+# Some listed actions emit no distinct CloudTrail event because they are
+# inline-authorized at create (iam:PassRole, *:CreateTags/TagRole/TagResource,
+# s3:ListBucket/GetBucketLocation) — required nonetheless, so keep them.
+#
+# NOTE: iam:PassRole is resource-scoped in tight policies (the cluster/node
+# roles); check-iam.sh simulates against "*", so a scoped-but-sufficient policy
+# can show DENIED here — confirm the scope rather than treating it as a failure.
 
 # --- identity / preflight ---
 sts:GetCallerIdentity
@@ -25,20 +29,15 @@ ec2:CreateNatGateway
 ec2:DescribeNatGateways
 ec2:AllocateAddress
 ec2:DescribeAddresses
+ec2:DescribeAddressesAttribute
 ec2:CreateRouteTable
 ec2:CreateRoute
 ec2:AssociateRouteTable
 ec2:DescribeRouteTables
+ec2:DescribeNetworkAcls
 ec2:DescribeAvailabilityZones
-ec2:DescribeAccountAttributes
-ec2:DescribeNetworkInterfaces
-ec2:CreateSecurityGroup
-ec2:AuthorizeSecurityGroupIngress
-ec2:AuthorizeSecurityGroupEgress
-ec2:RevokeSecurityGroupEgress
 ec2:DescribeSecurityGroups
 ec2:CreateTags
-ec2:DescribeTags
 
 # --- EKS cluster, node group, addons (eks.tf) ---
 eks:CreateCluster
@@ -48,7 +47,6 @@ eks:CreateNodegroup
 eks:DescribeNodegroup
 eks:CreateAddon
 eks:DescribeAddon
-eks:DescribeAddonVersions
 
 # --- IAM roles, policies, OIDC provider (identity.tf, eks.tf) ---
 iam:CreateRole
@@ -58,17 +56,18 @@ iam:ListRolePolicies
 iam:ListAttachedRolePolicies
 iam:PutRolePolicy
 iam:GetRolePolicy
-iam:CreatePolicy
-iam:GetPolicy
-iam:GetPolicyVersion
 iam:AttachRolePolicy
 iam:CreateOpenIDConnectProvider
 iam:GetOpenIDConnectProvider
 iam:TagOpenIDConnectProvider
 iam:PassRole
+# EKS's service-linked role is created on the first cluster in an account; a
+# reused account already has it. Keep active — customer first-cluster case needs it.
 iam:CreateServiceLinkedRole
 
-# --- S3 blob-storage bucket (storage.tf) ---
+# --- S3 blob-storage buckets (storage.tf) ---
+# The aws_s3_bucket refresh reads the full bucket-config battery on every bucket,
+# so the Get* set below is required even though the module only sets a few.
 s3:CreateBucket
 s3:PutBucketVersioning
 s3:GetBucketVersioning
@@ -80,3 +79,21 @@ s3:PutBucketTagging
 s3:GetBucketTagging
 s3:GetBucketLocation
 s3:ListBucket
+s3:GetBucketAcl
+s3:GetBucketCORS
+s3:GetBucketWebsite
+s3:GetBucketLogging
+s3:GetLifecycleConfiguration
+s3:GetReplicationConfiguration
+s3:GetBucketObjectLockConfiguration
+s3:GetBucketRequestPayment
+s3:GetAccelerateConfiguration
+s3:GetBucketPolicy
+
+# --- Conditional: uncomment for the matching variant ---
+# enable_load_balancer_controller = true (creates the ALB IAM policy):
+#   iam:CreatePolicy
+#   iam:GetPolicy
+#   iam:GetPolicyVersion
+# pinned addon versions (addon_version set, not null):
+#   eks:DescribeAddonVersions

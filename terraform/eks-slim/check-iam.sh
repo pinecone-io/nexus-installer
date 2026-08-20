@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
     --principal-arn) PRINCIPAL_ARN="${2:?--principal-arn needs a value}"; shift 2 ;;
     --region)        REGION="${2:?--region needs a value}"; shift 2 ;;
     --actions-file)  ACTIONS_FILE="${2:?--actions-file needs a value}"; shift 2 ;;
-    -h|--help)       grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)       awk 'NR==1 && /^#!/ {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -75,7 +75,7 @@ run_batch() {
     --action-names "${batch[@]}" \
     --query 'EvaluationResults[].[EvalActionName,EvalDecision]' \
     --output text 2>&1)" || die \
-"iam:SimulatePrincipalPolicy call failed — the running identity likely lacks that permission.
+"iam:SimulatePrincipalPolicy call failed — often a missing iam:SimulatePrincipalPolicy permission, or a bad --principal-arn.
     Run this check as an identity that has iam:SimulatePrincipalPolicy (and iam:GetRole).
     Underlying error:
 $(printf '%s' "$out" | sed 's/^/      /')"
