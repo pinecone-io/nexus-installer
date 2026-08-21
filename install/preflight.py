@@ -1131,7 +1131,11 @@ def main():
     ap.add_argument("--live", action="store_true", help="also run cloud/cluster checks (az/kubectl)")
     ap.add_argument("--live-gateway", action="store_true",
                     help="also mint a gateway token and make one real chat + embedding "
-                         "call (needs the client id/secret env vars in this shell)")
+                         "(and rerank, when coversRerank) call (needs the client "
+                         "id/secret env vars in this shell)")
+    ap.add_argument("--only-live-gateway", action="store_true",
+                    help="run ONLY the live gateway check, skipping every static check "
+                         "(for proving gateway credentials from a bare host)")
     args = ap.parse_args()
 
     global _gen_dir
@@ -1143,30 +1147,36 @@ def main():
     with open(args.inputs, encoding="utf-8") as f:
         inp = yaml.safe_load(f) or {}
 
-    print(f"Preflight: {args.inputs}" + ("  (static + live)" if args.live else "  (static)"))
-    check_dimension(inp)
-    check_embedding_width(inp)
-    provider = storage_provider(inp)
-    if provider == "s3":
-        check_buckets_s3(inp)
-    elif provider == "gcs":
-        check_buckets_gcs(inp)
-    else:
-        check_containers(inp)
-    check_inference(inp)
-    check_registry(inp)
-    if provider == "s3":
-        check_storage_irsa(inp)
-    elif provider == "gcs":
-        check_storage_gcs(inp)
-    else:
-        check_storage_auth(inp)
-    check_security(inp)
-    check_placeholders(inp)
-    if args.live:
-        check_live(inp)
-    if args.live_gateway:
+    # --only-live-gateway skips the static suite so a tester can prove gateway
+    # credentials on a bare host without a fully-filled customer.yaml.
+    if args.only_live_gateway:
+        print(f"Preflight: {args.inputs}  (live gateway only)")
         check_live_gateway(inp)
+    else:
+        print(f"Preflight: {args.inputs}" + ("  (static + live)" if args.live else "  (static)"))
+        check_dimension(inp)
+        check_embedding_width(inp)
+        provider = storage_provider(inp)
+        if provider == "s3":
+            check_buckets_s3(inp)
+        elif provider == "gcs":
+            check_buckets_gcs(inp)
+        else:
+            check_containers(inp)
+        check_inference(inp)
+        check_registry(inp)
+        if provider == "s3":
+            check_storage_irsa(inp)
+        elif provider == "gcs":
+            check_storage_gcs(inp)
+        else:
+            check_storage_auth(inp)
+        check_security(inp)
+        check_placeholders(inp)
+        if args.live:
+            check_live(inp)
+        if args.live_gateway:
+            check_live_gateway(inp)
 
     print()
     if _fails:
