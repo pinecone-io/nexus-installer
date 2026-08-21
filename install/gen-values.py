@@ -352,6 +352,9 @@ def gateway_spec(inp):
         "subscription_key_env": key_env,
         "subscription_header": header or DEFAULT_SUBSCRIPTION_HEADER,
         "api_version": api_version,
+        # Opt-in: rerank rides the minted gateway token, not a static key. Off by default
+        # — a gateway may front only chat/embedding, not rerank.
+        "covers_rerank": bool(opt(inp, "inference.gateway.coversRerank", False)),
     }
     if spec["client_auth"] not in ("basic", "post"):
         die(f"inference.gateway.clientAuth must be basic or post, got {spec['client_auth']!r}")
@@ -373,6 +376,16 @@ def cleartext_token_url_host(token_url):
 def _gateway_model_extras(gw):
     """Fields every gateway-fronted model entry carries."""
     extras = {"credential_ref": GATEWAY_CREDENTIAL, "api_version": gw["api_version"]}
+    if gw["subscription_key_env"]:
+        extras["extra_header_refs"] = {
+            gw["subscription_header"]: GATEWAY_SUBSCRIPTION_KEY_REF
+        }
+    return extras
+
+
+def _gateway_rerank_extras(gw):
+    """Like _gateway_model_extras but omits api_version — a litellm rerank model rejects it."""
+    extras = {"credential_ref": GATEWAY_CREDENTIAL}
     if gw["subscription_key_env"]:
         extras["extra_header_refs"] = {
             gw["subscription_header"]: GATEWAY_SUBSCRIPTION_KEY_REF
@@ -474,12 +487,15 @@ def build_self_hosted_values(inp, dim):
     if req_dims:
         embed_entry["request_dimensions"] = True
     embedding_models = {embed: embed_entry}
+    # Gateway credential (auto-refreshed) when the gateway fronts rerank; else static key.
+    rerank_gatewayed = bool(gw and gw["covers_rerank"])
+    rerank_auth = _gateway_rerank_extras(gw) if rerank_gatewayed else {"api_key_ref": RERANK_KEY_REF}
     rerank_models = {
         "rerank": {
             "api_style": "litellm",
             "model": rerank_model,
             "base_url": rerank_base_url,
-            "api_key_ref": RERANK_KEY_REF,
+            **rerank_auth,
             "max_retries": 2,
             "max_query_chars": 1000,
             "max_doc_chars": 800,
@@ -487,7 +503,9 @@ def build_self_hosted_values(inp, dim):
             # never set api_version on a litellm rerank model — the proxy rejects it.
         }
     }
-    provider_keys = {RERANK_KEY_REF: ""}
+    provider_keys = {}
+    if not rerank_gatewayed:
+        provider_keys[RERANK_KEY_REF] = ""
     credential_entry = None
     if gw:
         credential_entry = {
@@ -502,12 +520,18 @@ def build_self_hosted_values(inp, dim):
         provider_keys[GATEWAY_CLIENT_SECRET_REF] = ""
         if gw["subscription_key_env"]:
             provider_keys[GATEWAY_SUBSCRIPTION_KEY_REF] = ""
-        # The gateway publishes no rerank route yet, so rerank keeps its own
-        # endpoint and static key. Say so rather than let it look configured.
-        sys.stderr.write(
-            "gen-values: note: inference.gateway applies to chat + embedding only; "
-            "rerank still uses inference.rerankEndpoint with its own key.\n"
-        )
+        if rerank_gatewayed:
+            sys.stderr.write(
+                "gen-values: note: inference.gateway.coversRerank is on — rerank rides the "
+                "gateway credential (minted, auto-refreshed token) and still POSTs to "
+                "inference.rerankEndpoint. Confirm the gateway actually fronts that rerank route.\n"
+            )
+        else:
+            sys.stderr.write(
+                "gen-values: note: inference.gateway applies to chat + embedding only; rerank "
+                "uses inference.rerankEndpoint with its own key. Set inference.gateway.coversRerank: "
+                "true to front rerank through the gateway too (token auto-refreshes like chat/embedding).\n"
+            )
         cleartext_host = cleartext_token_url_host(gw["token_url"])
         if cleartext_host:
             sys.stderr.write(
@@ -613,6 +637,8 @@ def build_inputs_env(inp, dim, outdir):
     # subscription key.
     gw = gateway_spec(inp)
     env["GATEWAY_ENABLED"] = "1" if gw else "0"
+    # coversRerank: tells install.sh to skip the static rerank key (catalog uses credential_ref).
+    env["GATEWAY_COVERS_RERANK"] = "1" if (gw and gw["covers_rerank"]) else "0"
     if gw:
         env["GATEWAY_CREDENTIAL"] = GATEWAY_CREDENTIAL
         env["GATEWAY_TOKEN_URL"] = gw["token_url"]

@@ -126,7 +126,9 @@ inference:
   #   - llmKeyEnv / embeddingKeyEnv become unused: the inference proxy authenticates
   #     with an OAuth2 client-credentials grant (RFC 6749 §4.4), using the long-lived
   #     client id/secret you supply below.
-  #   - rerank is unaffected and still uses rerankEndpoint + rerankKeyEnv.
+  #   - rerank uses rerankEndpoint + rerankKeyEnv by DEFAULT. Set coversRerank: true
+  #     (below) to front rerank through the gateway too, so its token auto-refreshes like
+  #     chat/embedding (rerankKeyEnv then unused). Only if the gateway fronts rerank.
   # Verify it before installing: python3 preflight.py --live-gateway
   #
   # gateway:
@@ -139,6 +141,7 @@ inference:
   #   subscriptionKeyEnv: NEXUS_GATEWAY_SUBSCRIPTION_KEY  # [OPTIONAL] env var holding the gateway's own key
   #   subscriptionHeader: Ocp-Apim-Subscription-Key       # [DEFAULT] header that key travels in
   #   apiVersion: 2025-01-01-preview         # [YOURS] REQUIRED — sent as the ?api-version= query param on every call
+  #   coversRerank: false                    # [DEFAULT] false = rerank keeps rerankEndpoint + rerankKeyEnv; true = rerank rides the gateway credential (minted, auto-refreshed token). Enable only if the gateway actually fronts your rerank route.
   #
   # Gateway-path only: the proxy cannot introspect the deployment's limits when it
   # talks to a gateway, so state them. Defaults below suit a gpt-5-class deployment;
