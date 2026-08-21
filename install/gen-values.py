@@ -520,6 +520,10 @@ def build_self_hosted_values(inp, dim):
         provider_keys[LLM_KEY_REF] = ""
         provider_keys[EMBED_KEY_REF] = ""
 
+    # Without a cluster policy engine (AKS defaults to --network-policy none) the NetworkPolicy
+    # is admitted but unenforced, so the verification hook fails the release; false skips it.
+    np_enforcement_check = opt(inp, "security.networkPolicyEnforcementCheck", True)
+
     values = {
         "nexus": {
             "configProfiles": "self-hosted",
@@ -543,6 +547,8 @@ def build_self_hosted_values(inp, dim):
         values["nexus"]["inference"]["credentials"] = {
             GATEWAY_CREDENTIAL: credential_entry,
         }
+    if not np_enforcement_check:
+        values["nexus"]["networkPolicy"] = {"enforcementCheck": {"enabled": False}}
     return values
 
 
