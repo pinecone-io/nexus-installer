@@ -23,6 +23,8 @@ LIVE gateway check (--live-gateway, opt-in, makes real HTTP calls):
     inference proxy shapes them — so a wrong client secret / scope / gateway
     environment, a missing embeddings route, or a gateway that drops the
     `dimensions` request fails here in seconds instead of as 401s after the install.
+    When inference.gateway.coversRerank is set, one rerank call rides the same token
+    too, so the refreshing-token path is proven for rerank as well as chat + embed.
 
 LIVE checks (--live, opt-in, shells out to az/kubectl):
   - kube context reachable.
@@ -582,6 +584,13 @@ def check_live_gateway(inp):
     elif not _gateway_call_failed(chat_url, status, body):
         ok(f"chat completion through the gateway succeeded ({chat_url}, {budget})")
 
+    _check_gateway_embed(inp, endpoint, embed, query, call_headers)
+    _check_gateway_rerank(inp, query, call_headers)
+
+
+def _check_gateway_embed(inp, endpoint, embed, query, call_headers):
+    """Its own function so an embed-specific early return (a dropped dimensions
+    field) still leaves the rerank leg to run."""
     embed_url = f"{endpoint}/deployments/{embed}/embeddings{query}"
     embed_body = {"model": embed, "input": "ping"}
     want_dim = get(inp, "embedding.dimension") if _request_dimensions(inp, embed) else None
@@ -609,6 +618,31 @@ def check_live_gateway(inp):
             "embedding.requestDimensions: false and embedding.dimension to the width "
             "the model actually emits."
         )
+
+
+def _check_gateway_rerank(inp, query, call_headers):
+    """Only meaningful when coversRerank fronts rerank through the gateway; without
+    it rerank uses a static key that never refreshes, the gap this proves gone. The
+    model id travels in the body, so rerankEndpoint stops before /v2/rerank."""
+    if not get(inp, "inference.gateway.coversRerank"):
+        ok("inference.gateway.coversRerank is off; rerank does not ride the gateway, nothing to probe")
+        return
+    rerank_base = (get(inp, "inference.rerankEndpoint") or "").rstrip("/")
+    rerank = get(inp, "inference.rerankDeployment")
+    if not (rerank_base and rerank):
+        fail(
+            "inference.gateway.coversRerank is set but inference.rerankEndpoint / "
+            "inference.rerankDeployment is missing, so rerank has no gateway route to probe"
+        )
+        return
+    rerank_url = f"{rerank_base}/v2/rerank{query}"
+    payload = json.dumps(
+        {"model": rerank, "query": "ping", "documents": ["ping", "pong"], "top_n": 2}
+    ).encode()
+    status, body = _http_post(rerank_url, payload, call_headers)
+    if _gateway_call_failed(rerank_url, status, body):
+        return
+    ok(f"rerank through the gateway succeeded ({rerank_url})")
 
 
 def _http_post(url, data, headers, timeout=20):
@@ -1093,7 +1127,11 @@ def main():
     ap.add_argument("--live", action="store_true", help="also run cloud/cluster checks (az/kubectl)")
     ap.add_argument("--live-gateway", action="store_true",
                     help="also mint a gateway token and make one real chat + embedding "
-                         "call (needs the client id/secret env vars in this shell)")
+                         "(and rerank, when coversRerank) call (needs the client "
+                         "id/secret env vars in this shell)")
+    ap.add_argument("--only-live-gateway", action="store_true",
+                    help="run ONLY the live gateway check, skipping every static check "
+                         "(for proving gateway credentials from a bare host)")
     args = ap.parse_args()
 
     global _gen_dir
@@ -1105,30 +1143,36 @@ def main():
     with open(args.inputs, encoding="utf-8") as f:
         inp = yaml.safe_load(f) or {}
 
-    print(f"Preflight: {args.inputs}" + ("  (static + live)" if args.live else "  (static)"))
-    check_dimension(inp)
-    check_embedding_width(inp)
-    provider = storage_provider(inp)
-    if provider == "s3":
-        check_buckets_s3(inp)
-    elif provider == "gcs":
-        check_buckets_gcs(inp)
-    else:
-        check_containers(inp)
-    check_inference(inp)
-    check_registry(inp)
-    if provider == "s3":
-        check_storage_irsa(inp)
-    elif provider == "gcs":
-        check_storage_gcs(inp)
-    else:
-        check_storage_auth(inp)
-    check_security(inp)
-    check_placeholders(inp)
-    if args.live:
-        check_live(inp)
-    if args.live_gateway:
+    # --only-live-gateway skips the static suite so a tester can prove gateway
+    # credentials on a bare host without a fully-filled customer.yaml.
+    if args.only_live_gateway:
+        print(f"Preflight: {args.inputs}  (live gateway only)")
         check_live_gateway(inp)
+    else:
+        print(f"Preflight: {args.inputs}" + ("  (static + live)" if args.live else "  (static)"))
+        check_dimension(inp)
+        check_embedding_width(inp)
+        provider = storage_provider(inp)
+        if provider == "s3":
+            check_buckets_s3(inp)
+        elif provider == "gcs":
+            check_buckets_gcs(inp)
+        else:
+            check_containers(inp)
+        check_inference(inp)
+        check_registry(inp)
+        if provider == "s3":
+            check_storage_irsa(inp)
+        elif provider == "gcs":
+            check_storage_gcs(inp)
+        else:
+            check_storage_auth(inp)
+        check_security(inp)
+        check_placeholders(inp)
+        if args.live:
+            check_live(inp)
+        if args.live_gateway:
+            check_live_gateway(inp)
 
     print()
     if _fails:

@@ -129,12 +129,15 @@ write_secret_values_file() {
     jwt="$NEXUS_JWT_SECRET"
     session="$NEXUS_SESSION_CREDENTIAL"
   fi
-  rerank="$(secret_or_placeholder "$RERANK_KEY_ENV")"
   local pairs=(
     nexus/auth/jwtSecret "$jwt"
     nexus/config/byocSessionCredential "$session"
-    "nexus/inference/providerKeys/$RERANK_KEY_REF" "$rerank"
   )
+  # Skip the static rerank key when the gateway fronts rerank (catalog uses credential_ref).
+  if [ "${GATEWAY_COVERS_RERANK:-0}" != 1 ]; then
+    rerank="$(secret_or_placeholder "$RERANK_KEY_ENV")"
+    pairs+=( "nexus/inference/providerKeys/$RERANK_KEY_REF" "$rerank" )
+  fi
   if [ "${GATEWAY_ENABLED:-0}" = 1 ]; then
     # The chat/embedding credential is a token the proxy mints per refresh window;
     # what gets injected here is the long-lived OAuth2 client behind it.
