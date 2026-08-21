@@ -589,8 +589,8 @@ def check_live_gateway(inp):
 
 
 def _check_gateway_embed(inp, endpoint, embed, query, call_headers):
-    """The embedding leg of the live gateway probe; its own function so the rerank
-    leg still runs after an embed-specific early return (a dropped dimensions field)."""
+    """Its own function so an embed-specific early return (a dropped dimensions
+    field) still leaves the rerank leg to run."""
     embed_url = f"{endpoint}/deployments/{embed}/embeddings{query}"
     embed_body = {"model": embed, "input": "ping"}
     want_dim = get(inp, "embedding.dimension") if _request_dimensions(inp, embed) else None
@@ -621,13 +621,9 @@ def _check_gateway_embed(inp, endpoint, embed, query, call_headers):
 
 
 def _check_gateway_rerank(inp, query, call_headers):
-    """The rerank leg: reuse the minted token to rerank through the gateway.
-
-    Only meaningful when coversRerank routes rerank through the gateway; without it
-    rerank uses a static key that never refreshes, which is the gap this proves gone.
-    Cohere shape, posted to the gateway's own providers/cohere base — the model id
-    travels in the body, so rerankEndpoint stops before /v2/rerank.
-    """
+    """Only meaningful when coversRerank fronts rerank through the gateway; without
+    it rerank uses a static key that never refreshes, the gap this proves gone. The
+    model id travels in the body, so rerankEndpoint stops before /v2/rerank."""
     if not get(inp, "inference.gateway.coversRerank"):
         ok("inference.gateway.coversRerank is off; rerank does not ride the gateway, nothing to probe")
         return
