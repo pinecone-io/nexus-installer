@@ -13,6 +13,7 @@ STATIC checks (default, values-only, no cloud access):
     defined catalog entry.
   - image registry override set; pull-secret server is a prefix of the registry base.
   - workload_identity: clientId set. shared_key: existingSecret set.
+  - security: WARN when the NetworkPolicy enforcement check is turned off.
   - no leftover example/placeholder values (an `acme` token, an unfilled <...>, or a
     [YOURS] field still equal to customer.example.yaml).
 
@@ -666,6 +667,16 @@ def check_storage_auth(inp):
             warn("storage.storageKeyEnv is empty — create-secrets.sh needs it to build the key Secret")
 
 
+def check_security(inp):
+    section("Security")
+    if get(inp, "security.networkPolicyEnforcementCheck", True):
+        ok("networkPolicy enforcement check enabled (a post-install hook fails the install "
+           "if the cluster does not enforce the nexus-api NetworkPolicy)")
+    else:
+        warn("security.networkPolicyEnforcementCheck=false — the enforcement verification hook "
+             "is skipped; ensure nexus-api is isolated at a lower layer")
+
+
 def check_buckets_s3(inp):
     section("S3 buckets")
     prefix = get(inp, "storage.bucketPrefix")
@@ -1112,6 +1123,7 @@ def main():
         check_storage_gcs(inp)
     else:
         check_storage_auth(inp)
+    check_security(inp)
     check_placeholders(inp)
     if args.live:
         check_live(inp)

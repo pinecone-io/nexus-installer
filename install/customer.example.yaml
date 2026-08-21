@@ -178,6 +178,18 @@ host:
   name: Nexus                            # [DEFAULT]  -> nexus.config.host.name
   url: ""                                # [OPTIONAL] -> nexus.config.host.url; empty derives https://<ingress.host>
 
+# --- Security ----------------------------------------------------------------
+# The chart restricts ingress to nexus-api to the gateway (nexus-api trusts a
+# gateway-injected identity), and a post-install hook verifies the cluster actually
+# ENFORCES that NetworkPolicy — failing the install if a non-gateway pod can reach
+# nexus-api. Enforcement needs a cluster policy engine; AKS defaults to
+# --network-policy none, which admits the policy but does not enforce it.
+security:
+  # [DEFAULT] Leave true. Set false ONLY on a cluster with no policy engine, where
+  # equivalent isolation is enforced at a lower layer — it skips the verification hook
+  # (the NetworkPolicy object is still created).
+  networkPolicyEnforcementCheck: true
+
 # --- Azure identifiers -------------------------------------------------------
 # [OPTIONAL] Only used by `preflight.py --live` for the cloud-side checks.
 azure:
