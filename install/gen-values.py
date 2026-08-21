@@ -584,6 +584,9 @@ def build_inputs_env(inp, dim, outdir):
     baked_id = req(inp, "bundle.bakedIndexId")
     # Path decision: OCI cannot override the baked data-plane dimension or index id.
     oci_ok = (int(dim) == baked_dim) and (idx_id == baked_id)
+    # Not required under coversRerank — rerank uses the gateway credential, not this key.
+    gw = gateway_spec(inp)
+    rerank_gatewayed = bool(gw and gw["covers_rerank"])
     env = {
         "KUBE_CONTEXT": req(inp, "kubeContext"),
         "REGISTRY_BASE": req(inp, "registry.base"),
@@ -593,7 +596,8 @@ def build_inputs_env(inp, dim, outdir):
         "PULL_SECRET_NAME": opt(inp, "registry.pullSecretName", "acr-pull"),
         "BUNDLE_TAG": str(req(inp, "bundle.tag")),
         "CHART_VERSION": f"0.0.0-bundle.{req(inp, 'bundle.tag')}",
-        "RERANK_KEY_ENV": req(inp, "inference.rerankKeyEnv"),
+        "RERANK_KEY_ENV": (opt(inp, "inference.rerankKeyEnv", "") if rerank_gatewayed
+                           else req(inp, "inference.rerankKeyEnv")),
         "RERANK_KEY_REF": RERANK_KEY_REF,
         "STATIC_INDEX_ID": idx_id,
         "EMBED_DIMENSION": str(dim),
@@ -635,10 +639,9 @@ def build_inputs_env(inp, dim, outdir):
     # Which credentials install.sh has to resolve depends on the posture: the gateway
     # one has no per-provider key at all, only the OAuth2 client and the gateway's
     # subscription key.
-    gw = gateway_spec(inp)
     env["GATEWAY_ENABLED"] = "1" if gw else "0"
     # coversRerank: tells install.sh to skip the static rerank key (catalog uses credential_ref).
-    env["GATEWAY_COVERS_RERANK"] = "1" if (gw and gw["covers_rerank"]) else "0"
+    env["GATEWAY_COVERS_RERANK"] = "1" if rerank_gatewayed else "0"
     if gw:
         env["GATEWAY_CREDENTIAL"] = GATEWAY_CREDENTIAL
         env["GATEWAY_TOKEN_URL"] = gw["token_url"]
