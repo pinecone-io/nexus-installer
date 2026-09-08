@@ -14,6 +14,7 @@ STATIC checks (default, values-only, no cloud access):
   - image registry override set; pull-secret server is a prefix of the registry base.
   - workload_identity: clientId set. shared_key: existingSecret set.
   - security: WARN when the NetworkPolicy enforcement check is turned off.
+  - sizing: a supported size class.
   - no leftover example/placeholder values (an `acme` token, an unfilled <...>, or a
     [YOURS] field still equal to customer.example.yaml).
 
@@ -87,6 +88,8 @@ BLOB_SERVICE_ACCOUNTS = [
     "docs-api-sa", "index-builders-slab-sa", "query-routers-sa",
     "query-executors-slab-sa", "request-log-writers-sa",
 ]
+
+SIZING_CLASSES = ("small",)
 
 GREEN, RED, YELLOW, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
 if not sys.stdout.isatty():
@@ -711,6 +714,16 @@ def check_security(inp):
              "is skipped; ensure nexus-api is isolated at a lower layer")
 
 
+def check_sizing(inp):
+    section("Sizing")
+    s = str(get(inp, "sizing", "small"))
+    if s not in SIZING_CLASSES:
+        fail(f"sizing={s!r} is not a supported size class. "
+             f"Supported: {', '.join(SIZING_CLASSES)}")
+    else:
+        ok(f"sizing = {s}")
+
+
 def check_buckets_s3(inp):
     section("S3 buckets")
     prefix = get(inp, "storage.bucketPrefix")
@@ -1168,6 +1181,7 @@ def main():
         else:
             check_storage_auth(inp)
         check_security(inp)
+        check_sizing(inp)
         check_placeholders(inp)
         if args.live:
             check_live(inp)
