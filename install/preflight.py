@@ -11,6 +11,15 @@ STATIC checks (default, values-only, no cloud access):
   - self-hosted profile selected; every catalog api_key_ref has a providerKeys entry;
     all three chat tier slots (lite/standard/pro) + embedding + rerank resolve to a
     defined catalog entry.
+  - catalog entry shape: every model entry satisfies the inference proxy's own schema
+    (required fields present, ceilings positive, no forbidden field combination), so a
+    hand-edited overlay fails here rather than crash-looping the proxy.
+  - model ids vs litellm's registry, for api_style='litellm' entries ONLY (needs litellm
+    installed; SKIPs with a re-run hint when it isn't): the surface's mode matches, a chat
+    model carries the OpenAI params Nexus relies on, and its token budgets resolve — the
+    questions the proxy itself puts to litellm at startup. An 'openai'-style entry is never
+    looked up, because the proxy never looks it up either; its shape check above plus a
+    live call are what cover it.
   - image registry override set; pull-secret server is a prefix of the registry base.
   - workload_identity: clientId set. shared_key: existingSecret set.
   - security: WARN when the NetworkPolicy enforcement check is turned off.
@@ -26,6 +35,16 @@ LIVE gateway check (--live-gateway, opt-in, makes real HTTP calls):
     When inference.gateway.coversRerank is set, one rerank call rides the same token
     too, so the refreshing-token path is proven for rerank as well as chat + embed.
 
+LIVE model check (--live-models, opt-in, makes real HTTP calls):
+  - one real call for every model in the catalog, issued by the same client the proxy
+    uses: litellm for an api_style='litellm' model (so litellm builds the route and picks
+    the api_version, exactly as at runtime), and the gateway for the api_style='openai'
+    entries a gateway fronts -- for those the call is the ONLY validation, so this runs
+    the gateway probe itself rather than deferring to --live-gateway. The embedding leg
+    MEASURES the returned vector width against embedding.dimension, which is the only way
+    to be sure for a deployment name no lookup table knows. Needs litellm for the
+    litellm-style legs; without it they SKIP.
+
 LIVE checks (--live, opt-in, shells out to az/kubectl):
   - kube context reachable.
   - the seven blob containers exist.
@@ -33,15 +52,19 @@ LIVE checks (--live, opt-in, shells out to az/kubectl):
   - the workload identity (resolved from its clientId) has a federated credential for
     each blob-accessing service account.
 
-Exit 0 only if no check FAILs. WARN never fails the run.
+Exit 0 only if no check FAILs. WARN and SKIP never fail the run, but a SKIP means the
+check did not run at all, so the summary reports those separately.
 
 Usage: python3 preflight.py [-f customer.yaml] [--live]
 """
 import argparse
 import base64
+import importlib.metadata
 import json
+import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
 import urllib.error
@@ -88,12 +111,14 @@ BLOB_SERVICE_ACCOUNTS = [
     "query-executors-slab-sa", "request-log-writers-sa",
 ]
 
-GREEN, RED, YELLOW, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
+GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
 if not sys.stdout.isatty():
-    GREEN = RED = YELLOW = RESET = ""
+    GREEN = RED = YELLOW = DIM = RESET = ""
 
 _fails = 0
 _warns = 0
+_skips = 0
+_gateway_probed = False
 
 _gen_dir = None
 
@@ -130,6 +155,15 @@ def warn(msg):
     print(f"  {YELLOW}WARN{RESET}  {msg}")
 
 
+def skip(msg):
+    """A check that could not run (an optional dependency is absent), as distinct from
+    one that ran and passed. Counted separately so the summary can say so — a skipped
+    check must never read as a clean pass."""
+    global _skips
+    _skips += 1
+    print(f"  {DIM}SKIP{RESET}  {msg}")
+
+
 def section(title):
     print(f"\n{title}")
 
@@ -156,7 +190,92 @@ def run(cmd):
         return 1, str(e)
 
 
+# ------------------------------------------------------------------ litellm (optional)
+EXPECTED_LITELLM = "1.96.2"
+
+
+def litellm_hint():
+    """The command that re-runs THIS invocation with litellm present.
+
+    Built from argv, not written out: a hardcoded `preflight.py` would send an operator
+    who passed -f / --gen-dir to a different inputs file than the one they just
+    validated. Only the litellm version is pinned -- it decides every registry answer,
+    while the interpreter does not.
+    """
+    argv = [sys.argv[0] or "preflight.py"] + sys.argv[1:]
+    rerun = " ".join(shlex.quote(a) for a in argv)
+    return f"pip install 'litellm=={EXPECTED_LITELLM}' && python3 {rerun}"
+
+_litellm = False  # False = not attempted yet; None = unavailable
+
+
+def _litellm_version():
+    """The installed litellm's version, or "" when it has no distribution metadata (a
+    source checkout or a vendored copy) -- which is not a reason to stop checking."""
+    try:
+        return importlib.metadata.version("litellm")
+    except importlib.metadata.PackageNotFoundError:
+        return ""
+
+
+def litellm_or_none():
+    """The litellm module, or None when it isn't installed. Silences its console chatter
+    (feedback banner, Info lines) so only preflight's own output shows, and warns once
+    when the installed version isn't the one the proxy runs -- a different registry can
+    answer differently, so a PASS against it is not proof the proxy will agree."""
+    global _litellm
+    if _litellm is not False:
+        return _litellm
+    # Left alone, litellm fetches the cost map from its GitHub main at import, so the
+    # catalog would be checked against a moving registry nobody runs. The proxy reads the
+    # map bundled in the wheel, and matching it is what makes pinning the version mean
+    # anything.
+    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+    try:
+        import litellm
+    except ImportError:
+        _litellm = None
+        return None
+    litellm.suppress_debug_info = True
+    for name in ("LiteLLM", "litellm"):
+        logging.getLogger(name).setLevel(logging.CRITICAL)
+    _litellm = litellm
+    installed = _litellm_version()
+    if installed and installed != EXPECTED_LITELLM:
+        warn(
+            f"litellm {installed} is installed but the inference proxy runs "
+            f"{EXPECTED_LITELLM}; its model registry may differ, so a PASS below is not "
+            f"proof the proxy agrees. Faithful check: {litellm_hint()}"
+        )
+    return _litellm
+
+
+def litellm_model_info(model):
+    """A model's entry in litellm's registry, or None when it has none -- the same call,
+    and the same tolerance for a miss, that the inference proxy makes."""
+    lite = litellm_or_none()
+    if lite is None:
+        return None
+    try:
+        info = lite.get_model_info(model=model)
+    except Exception:
+        return None
+    return info if isinstance(info, dict) else None
+
+
 # --------------------------------------------------------------------------- static
+def _catalog_present(inp):
+    """Whether there is an emitted catalog to judge, reporting the whole group once when
+    there is not -- every member would otherwise repeat the same line."""
+    if _catalog_targets(inp)[1] == "generated":
+        return True
+    section("Inference catalog (generated overlay)")
+    skip("no generated/values.self-hosted.yaml — run gen-values.py first. The embedding "
+         "width, catalog entry shape, model-id and --live-models checks all read it, so "
+         "none of them ran; every other check is unaffected.")
+    return False
+
+
 def check_dimension(inp):
     section("Dimension agreement")
     dim = get(inp, "embedding.dimension")
@@ -184,7 +303,10 @@ def check_dimension(inp):
     else:
         ok(f"dimension {dim} == baked dimension {baked_dim} -> OCI path can carry it")
 
-    # Cross-check the emitted overlay: the three dimension sites must all equal `dim`.
+    # The catalog's dimension counts as a site: the proxy serves it from
+    # GET /v1/models/embedding as the width to provision an index at, so one disagreeing
+    # with the index the data plane builds puts vectors of one width into an index of
+    # another.
     gi = load_gen("values.install.yaml")
     if gi:
         sites = {
@@ -192,11 +314,14 @@ def check_dimension(inp):
             "nexus.config.indexMetadata.dimension": get(gi, "nexus.config.indexMetadata.dimension"),
             "nexus.config.embeddingModel.dimension": get(gi, "nexus.config.embeddingModel.dimension"),
         }
+        for surface, cid, entry in _catalog_targets(inp)[0]:
+            if surface == "embedding":
+                sites[f"inference.embeddingModels.{cid}.dimension"] = entry.get("dimension")
         bad = {k: v for k, v in sites.items() if v is not None and int(v) != int(dim)}
         if bad:
-            fail(f"dimension drift in generated values.install.yaml vs embedding.dimension={dim}: {bad}")
+            fail(f"dimension drift in the generated overlays vs embedding.dimension={dim}: {bad}")
         else:
-            ok(f"generated overlay: all dimension sites == {dim}")
+            ok(f"generated overlays: all {len(sites)} dimension sites == {dim}")
         gid = get(gi, "staticIndex.id")
         gmid = get(gi, "nexus.config.indexMetadata.indexId")
         if gid != gmid:
@@ -211,79 +336,49 @@ def check_dimension(inp):
         ok("staticIndex.id == baked index id -> OCI path can carry it")
 
 
-# Native output widths of common embedding models, keyed by a substring of the
-# deployment name. Used to catch the silent case where a model emits a width the
-# index does not expect. Matryoshka models (text-embedding-3-*) can be reduced via
-# request_dimensions; others cannot.
-KNOWN_NATIVE_DIMS = {
-    "text-embedding-3-small": (1536, True),
-    "text-embedding-3-large": (3072, True),
-    "text-embedding-ada-002": (1536, False),
-    "multilingual-e5-large": (1024, False),
-}
-
-
-def _embedding_facts(inp):
-    """Effective (model_name, declared_dim, request_dimensions) from the emitted
-    self-hosted overlay when present (the artifact that ships), else from inputs with
-    the same Matryoshka auto-default the generator applies."""
-    gsh = load_gen("values.self-hosted.yaml")
-    ems = get(gsh, "nexus.inference.embeddingModels") if gsh else None
-    if ems:
-        tiers = get(gsh, "nexus.inference.tiers") or {}
-        key = tiers.get("embedding") or next(iter(ems))
-        e = ems.get(key, {}) or {}
-        model = str(e.get("model", "")).split("/")[-1]
-        return model, e.get("dimension"), bool(e.get("request_dimensions", False))
-    model = get(inp, "inference.embeddingDeployment") or ""
-    req = get(inp, "embedding.requestDimensions", None)
-    if req is None:
-        req = model.lower().startswith("text-embedding-3")
-    return model, get(inp, "embedding.dimension"), bool(req)
-
-
 def check_embedding_width(inp):
+    """The declared width against whatever can establish it without a call.
+
+    litellm's registry records an output_vector_size for some models and nothing for
+    others (an `azure/<deployment>` entry has none), and the openai and pinecone styles
+    are never looked up at all -- so for most catalogs the only thing that can confirm the
+    width is --live-models, which measures the vector the model actually returns. This
+    check states what it can and says so when it cannot, rather than guessing from the
+    model's name.
+    """
     section("Embedding model output width")
-    model, dim, req = _embedding_facts(inp)
-    model = model.lower()
-    baked = get(inp, "bundle.bakedDimension")
-    if dim is None or not model:
+    targets, _source = _catalog_targets(inp)
+    entries = [(cid, e) for surface, cid, e in targets if surface == "embedding"]
+    if not entries:
+        fail("the generated overlay declares no embedding model")
         return
-    native = matryoshka = None
-    for name, (width, matr) in KNOWN_NATIVE_DIMS.items():
-        if name in model:
-            native, matryoshka = width, matr
-            break
-    if native is None:
-        warn(f"unknown embedding model '{model}' — can't verify its native width equals {dim}")
-        return
-    if native == int(dim):
-        ok(f"'{model}' native width {native} == target dimension {dim} (no reduction needed)")
-        return
-    # target != native: the model must be asked to reduce, and must be able to.
-    if matryoshka and req:
-        ok(
-            f"'{model}' native {native} -> request_dimensions asks for {dim} (Matryoshka; "
-            "needs a bundle whose proxy honors the dimensions request)"
-        )
-    elif matryoshka and not req:
-        fail(
-            f"'{model}' emits {native}-wide vectors natively but the declared dimension is {dim}. "
-            "Set embedding.requestDimensions: true so the model truncates to the declared width "
-            "(Matryoshka; needs a bundle whose proxy honors it). Otherwise the vectors "
-            "won't match the index and ingest fails."
-        )
-    else:
-        # Non-Matryoshka model that can't reach the declared width by reduction.
-        via = ""
-        if baked is not None and int(native) != int(baked):
-            via = (f" Since {native} != the baked default {baked}, that is the local-chart path "
-                   "(remint-dbslim.sh + install.sh --path local).")
-        fail(
-            f"'{model}' is not reducible, so it can't emit the declared dimension {dim} "
-            f"(it outputs {native}). Set the dimension to {native} or choose a Matryoshka model "
-            f"(text-embedding-3-*).{via}"
-        )
+    for cid, entry in entries:
+        model = entry.get("model")
+        declared = entry.get("dimension")
+        asks_for_width = bool(entry.get("request_dimensions"))
+        label = f"embedding '{cid}'"
+        if not isinstance(declared, int) or declared <= 0:
+            continue
+        native = None
+        if entry.get("api_style") == "litellm":
+            native = (litellm_model_info(model) or {}).get("output_vector_size")
+        if not isinstance(native, int) or native <= 0:
+            detail = "asks the model to emit that width" if asks_for_width else "takes the model's native width"
+            ok(f"{label}: declares {declared} and {detail}; only --live-models can confirm "
+               "what the model returns")
+            continue
+        if native == declared:
+            ok(f"{label}: {model!r} emits {native} natively == the declared {declared}")
+        elif asks_for_width:
+            ok(f"{label}: {model!r} emits {native} natively and request_dimensions asks for "
+               f"{declared}; --live-models confirms the model honors it")
+        else:
+            fail(
+                f"{label}: litellm records {model!r} as emitting {native}-wide vectors but "
+                f"the entry declares {declared}, and request_dimensions is off, so nothing "
+                f"reduces them. Set the dimension to {native}, or set request_dimensions "
+                "if the model can emit a narrower width on request."
+            )
 
 
 def check_containers(inp):
@@ -327,10 +422,11 @@ def check_inference(inp):
     inf = get(gsh, "nexus.inference") if gsh else None
     if inf is None:
         inf = {
-            "llmModels": {"chat": {"api_key_ref": "llm-key"}},
+            "llmModels": {f"chat-{t}": {"api_key_ref": "llm-key"} for t in REQUIRED_LLM_TIERS},
             "embeddingModels": {embed: {"api_key_ref": "embedding-key"}},
             "rerankModels": {"rerank": {"api_key_ref": "rerank-key"}},
-            "tiers": {"lite": "chat", "standard": "chat", "pro": "chat", "embedding": embed, "rerank": "rerank"},
+            "tiers": {**{t: f"chat-{t}" for t in REQUIRED_LLM_TIERS},
+                      "embedding": embed, "rerank": "rerank"},
             "providerKeys": {"llm-key": "", "embedding-key": "", "rerank-key": ""},
         }
 
@@ -380,52 +476,411 @@ def check_inference(inp):
         fail(f"tier slots referencing an undefined catalog entry: {unresolved}")
     else:
         ok("all tier slots resolve to a defined catalog entry")
-    chat_tiers = [tiers.get(s) for s in ("lite", "standard", "pro")]
-    if all(chat_tiers):
-        ok("three chat tier slots configured (lite/standard/pro)")
-    else:
+    chat_tiers = [tiers.get(s) for s in REQUIRED_LLM_TIERS]
+    if not all(chat_tiers):
         fail(f"chat tiers incomplete — lite/standard/pro must all be set, got {chat_tiers}")
-
-    # Naming guardrail — advisory, not fatal (customer may differ).
-    embed_dep = get(inp, "inference.embeddingDeployment")
-    if embed_dep != "text-embedding-3-small":
-        warn(
-            f"inference.embeddingDeployment={embed_dep!r}: the recommended model is "
-            "'text-embedding-3-small'."
-        )
-    # Rerank: the proxy validates `<rerankProvider>/<rerankDeployment>` against LiteLLM's
-    # registry at startup, so flag combos LiteLLM likely won't map (it's not a fixed name).
-    rerank_dep = get(inp, "inference.rerankDeployment")
-    rerank_provider = get(inp, "inference.rerankProvider", "cohere")
-    if rerank_provider not in ("cohere", "azure_ai"):
-        fail(f"inference.rerankProvider must be 'cohere' or 'azure_ai', got {rerank_provider!r}")
-    elif rerank_provider == "cohere" and rerank_dep and not rerank_dep.startswith("rerank-v3"):
-        warn(
-            f"rerankProvider=cohere + rerankDeployment={rerank_dep!r} → model 'cohere/{rerank_dep}', "
-            "which LiteLLM may not map (proxy fails to start if not). Known-good: 'rerank-v3.5'; "
-            "for a newer reranker use rerankProvider=azure_ai (e.g. cohere-rerank-v4.0-fast)."
-        )
-    elif rerank_provider == "azure_ai" and rerank_dep and not rerank_dep.startswith("cohere-rerank-"):
-        warn(
-            f"rerankProvider=azure_ai + rerankDeployment={rerank_dep!r} → model 'azure_ai/{rerank_dep}'; "
-            "azure_ai expects LiteLLM's canonical name (e.g. cohere-rerank-v4.0-fast), which must "
-            "also be your Foundry deployment name."
-        )
+    elif len(set(chat_tiers)) != len(chat_tiers):
+        # Distinct because the picker's "lite == <id>" aliasing needs an injective mapping.
+        collisions = {t: r for t, r in zip(REQUIRED_LLM_TIERS, chat_tiers)
+                      if chat_tiers.count(r) > 1}
+        fail(f"chat tiers must each point at a DISTINCT model, but {collisions} collide; "
+             "the proxy raises on that at startup")
+    else:
+        ok("three chat tier slots configured (lite/standard/pro), each a distinct model")
 
 
-def _is_gpt5_family(model):
-    """The inference proxy's own gpt-5 test; it renames max_tokens to
-    max_completion_tokens for exactly these model ids, so the probe must too."""
+# Mirrors the inference proxy's per-surface model schema.
+REQUIRED_MODEL_FIELDS = {
+    "chat": ("model", "api_style", "label", "provider"),
+    "embedding": ("model", "api_style", "dimension", "max_input_chars", "max_batch_size"),
+    "rerank": ("model", "api_style", "max_query_chars", "max_doc_chars", "max_docs_per_request"),
+}
+# Chat's tuple is empty because its budgets may still be default-filled from the registry.
+POSITIVE_INT_FIELDS = {
+    "chat": (),
+    "embedding": ("dimension", "max_input_chars", "max_batch_size"),
+    "rerank": ("max_query_chars", "max_doc_chars", "max_docs_per_request"),
+}
+PRICE_FIELDS = {
+    "chat": ("input_price_per_mtok", "output_price_per_mtok",
+             "cache_read_price_per_mtok", "cache_write_price_per_mtok"),
+    "embedding": ("input_price_per_mtok",),
+    "rerank": ("request_price_per_1k",),
+}
+# Every one of the proxy's config models is extra="forbid", so a field it does not declare
+# is not ignored -- pydantic refuses to construct the model and the proxy never boots.
+_SHARED_MODEL_FIELDS = frozenset({
+    "model", "api_style", "api_key", "api_key_ref", "credential_ref", "base_url",
+    "api_version", "extra_headers", "extra_header_refs", "max_retries", "available",
+})
+ALLOWED_MODEL_FIELDS = {
+    "chat": _SHARED_MODEL_FIELDS | {
+        "label", "provider", "vision", "model_family", "context_window",
+        "max_output_tokens", "input_price_per_mtok", "output_price_per_mtok",
+        "cache_read_price_per_mtok", "cache_write_price_per_mtok",
+    },
+    "embedding": _SHARED_MODEL_FIELDS | {
+        "dimension", "max_input_chars", "max_batch_size", "request_dimensions",
+        "input_price_per_mtok",
+    },
+    "rerank": _SHARED_MODEL_FIELDS | {
+        "max_query_chars", "max_doc_chars", "max_docs_per_request", "request_price_per_1k",
+    },
+}
+ALLOWED_CREDENTIAL_FIELDS = frozenset({
+    "auth_style", "token_url", "client_id_ref", "client_secret_ref", "scope",
+    "client_auth", "available",
+})
+NONEMPTY_WHEN_PRESENT = ("api_version", "credential_ref")
+CREDENTIAL_AUTH_STYLES = ("oauth2_client_credentials",)
+CREDENTIAL_CLIENT_AUTH = ("basic", "post")
+CREDENTIAL_REQUIRED = ("auth_style", "token_url", "client_id_ref", "client_secret_ref", "scope")
+REQUIRED_LLM_TIERS = ("lite", "standard", "pro")
+# The proxy pins both when the entry names neither.
+DEFAULT_PINECONE_BASE_URL = "https://api.pinecone.io"
+DEFAULT_PINECONE_API_VERSION = "2025-10"
+VALID_API_STYLES = {
+    "chat": ("openai", "litellm"),
+    "embedding": ("pinecone", "litellm", "openai"),
+    "rerank": ("pinecone", "litellm"),
+}
+SURFACE_GROUPS = (("chat", "llmModels"), ("embedding", "embeddingModels"), ("rerank", "rerankModels"))
+
+
+def _catalog_targets(inp):
+    """([(surface, catalog_id, entry)], source) for every model in the emitted
+    values.self-hosted.yaml -- the catalog that reaches the cluster, so a generator bug or
+    a hand-edit is caught too. `source` is "generated", or "missing" when there is no
+    overlay to read; every caller refuses to judge a catalog it had to invent. Surfaces are
+    keyed by the proxy's own mode names, which is what the registry check compares against.
+    """
+    inf = get(load_gen("values.self-hosted.yaml"), "nexus.inference")
+    if not inf:
+        return [], "missing"
+    targets = [
+        (surface, cid, entry)
+        for surface, group in SURFACE_GROUPS
+        for cid, entry in (inf.get(group) or {}).items()
+        if isinstance(entry, dict)
+    ]
+    return targets, "generated"
+
+def check_catalog_structure(inp):
+    """Config-shape invariants the proxy hard-fails on at startup that no live call can
+    exercise: absent required fields, non-positive ceilings, and field combinations the
+    schema forbids. gen-values.py gets these right, so this is a drift guard -- the
+    local-chart path invites editing the emitted overlay by hand."""
+    section("Catalog entry shape")
+    targets, _source = _catalog_targets(inp)
+    if not targets:
+        fail("the generated overlay declares no inference models at all")
+        return
+
+    bad = 0
+    for surface, cid, entry in targets:
+        label = f"{surface} '{cid}'"
+        api_style = entry.get("api_style")
+        # Absent or blank, not merely falsy: a 0 is present, and the positive-int check
+        # below is the one whose message fits it.
+        missing = [
+            f for f in REQUIRED_MODEL_FIELDS[surface]
+            if entry.get(f) is None or (isinstance(entry.get(f), str) and not entry[f].strip())
+        ]
+        if missing:
+            fail(f"{label}: required field(s) {missing} missing or empty — the proxy's "
+                 "schema declares them with no default and won't construct the model")
+            bad += 1
+            continue
+        unknown = sorted(set(entry) - ALLOWED_MODEL_FIELDS[surface])
+        if unknown:
+            fail(f"{label}: field(s) {unknown} are not in the proxy's schema for this "
+                 "surface; it forbids extras, so a typo here fails startup rather than "
+                 "being ignored")
+            bad += 1
+        for field in NONEMPTY_WHEN_PRESENT:
+            if field in entry and not str(entry[field] or "").strip():
+                fail(f"{label}: {field} is present but empty; the proxy accepts it absent "
+                     "or non-empty, not blank")
+                bad += 1
+        if api_style not in VALID_API_STYLES[surface]:
+            fail(f"{label}: api_style {api_style!r} is not valid for this surface "
+                 f"(expected one of {list(VALID_API_STYLES[surface])})")
+            bad += 1
+            continue
+        for field in POSITIVE_INT_FIELDS[surface]:
+            value = entry.get(field)
+            if not isinstance(value, int) or value <= 0:
+                fail(f"{label}: {field} must be a positive integer, got {value!r}")
+                bad += 1
+        retries = entry.get("max_retries", 0)
+        if not isinstance(retries, int) or retries < 0:
+            fail(f"{label}: max_retries must be a non-negative integer, got {retries!r}")
+            bad += 1
+        if api_style == "openai" and not entry.get("base_url"):
+            fail(f"{label}: api_style 'openai' requires base_url — the SDK appends the "
+                 "route to it and derives no path of its own")
+            bad += 1
+        if surface == "chat":
+            for field in ("context_window", "max_output_tokens"):
+                value = entry.get(field)
+                if field in entry and (not isinstance(value, int) or value <= 0):
+                    fail(f"{label}: {field} is set to {value!r}; the proxy requires a "
+                         "positive integer when the field is present, and rejects it "
+                         "before any registry default-fill")
+                    bad += 1
+                elif field not in entry and api_style == "openai":
+                    # No registry lookup happens for this style, so nothing default-fills
+                    # the budgets and the proxy raises on whichever is unresolved.
+                    fail(f"{label}: api_style 'openai' chat models must state {field} "
+                         "(nothing default-fills it for this style)")
+                    bad += 1
+        if surface == "chat" and entry.get("model_family") not in (None, *MODEL_FAMILIES):
+            fail(f"{label}: model_family {entry['model_family']!r} is not one of "
+                 f"{sorted(MODEL_FAMILIES)}; the proxy's schema rejects it")
+            bad += 1
+        if surface == "rerank" and api_style == "litellm" and entry.get("api_version"):
+            fail(f"{label}: api_version is valid only for api_style 'pinecone'; "
+                 "litellm.arerank takes no such parameter and the proxy rejects it")
+            bad += 1
+        if entry.get("credential_ref") and (entry.get("api_key_ref") or entry.get("api_key")):
+            fail(f"{label}: credential_ref and api_key_ref / api_key are mutually "
+                 "exclusive — a model draws its bearer value from exactly one source")
+            bad += 1
+        if api_style == "pinecone":
+            forbidden = [f for f in ("api_key_ref", "api_key", "credential_ref",
+                                     "extra_headers", "extra_header_refs") if entry.get(f)]
+            if forbidden:
+                fail(f"{label}: {forbidden} are not valid for api_style 'pinecone' — "
+                     "the caller supplies the key per request via the Api-Key header")
+                bad += 1
+        headers = entry.get("extra_headers") or {}
+        header_refs = entry.get("extra_header_refs") or {}
+        collision = sorted(set(headers) & set(header_refs))
+        if collision:
+            fail(f"{label}: header(s) {collision} set in both extra_headers and "
+                 "extra_header_refs; declare each in one place only")
+            bad += 1
+        for field, mapping in (("extra_headers", headers), ("extra_header_refs", header_refs)):
+            for name, value in mapping.items():
+                if not name or not value:
+                    fail(f"{label}: {field} entry {name!r} = {value!r} — header name and "
+                         "value must both be non-empty")
+                    bad += 1
+        for field in PRICE_FIELDS[surface]:
+            value = entry.get(field)
+            if value is not None and (not isinstance(value, (int, float)) or value < 0):
+                fail(f"{label}: {field} must be a number >= 0, got {value!r}")
+                bad += 1
+
+    bad += _check_credentials()
+    if not bad:
+        ok(f"all {len(targets)} catalog entries satisfy the proxy's schema")
+
+
+def _check_credentials():
+    """Every credentials entry against the proxy's schema for one. Returns the failure
+    count. RFC 6749 §10.8 is why cleartext is refused: a token_url over http sends the
+    client secret and the minted token in the clear, so the proxy admits it only on
+    loopback."""
+    credentials = get(load_gen("values.self-hosted.yaml"), "nexus.inference.credentials") or {}
+    bad = 0
+    for name, cred in credentials.items():
+        label = f"credential '{name}'"
+        if not isinstance(cred, dict):
+            fail(f"{label}: not a mapping")
+            bad += 1
+            continue
+        unknown = sorted(set(cred) - ALLOWED_CREDENTIAL_FIELDS)
+        if unknown:
+            fail(f"{label}: field(s) {unknown} are not in the proxy's credential schema; "
+                 "it forbids extras, so a typo here fails startup")
+            bad += 1
+        missing = [f for f in CREDENTIAL_REQUIRED if not str(cred.get(f) or "").strip()]
+        if missing:
+            fail(f"{label}: required field(s) {missing} missing or empty")
+            bad += 1
+            continue
+        if cred["auth_style"] not in CREDENTIAL_AUTH_STYLES:
+            fail(f"{label}: auth_style {cred['auth_style']!r} is not one of "
+                 f"{list(CREDENTIAL_AUTH_STYLES)}")
+            bad += 1
+        if cred.get("client_auth", "basic") not in CREDENTIAL_CLIENT_AUTH:
+            fail(f"{label}: client_auth {cred['client_auth']!r} is not one of "
+                 f"{list(CREDENTIAL_CLIENT_AUTH)}")
+            bad += 1
+        token_url = cred["token_url"]
+        if not token_url.startswith(("http://", "https://")):
+            fail(f"{label}: token_url must be an absolute http(s) URL, got {token_url!r}")
+            bad += 1
+        elif token_url.startswith("http://") and not _is_loopback(token_url):
+            fail(f"{label}: token_url {token_url!r} is cleartext http to a non-loopback "
+                 "host; the proxy refuses it because the client secret and the minted "
+                 "token would cross the network in the clear")
+            bad += 1
+    return bad
+
+
+def _is_loopback(url):
+    host = urllib.parse.urlsplit(url).hostname or ""
+    return host == "localhost" or host == "::1" or host.startswith("127.")
+
+
+def _resolve_budget(configured, registry):
+    """The budget the proxy ends up with: the registry
+    value when nothing is configured, otherwise the configured one clamped down to the
+    registry ceiling -- an operator can tighten a budget, not loosen it. Returns
+    (value, clamped)."""
+    ceiling = registry if isinstance(registry, int) and registry > 0 else None
+    if not isinstance(configured, int) or configured <= 0:
+        return ceiling, False
+    if ceiling is not None and configured > ceiling:
+        return ceiling, True
+    return configured, False
+
+
+def _check_registry_entry(surface, cid, entry):
+    """One api_style='litellm' entry against litellm's registry, replicating what the
+    proxy does with the answer at startup. Only that style reaches here: the proxy gates
+    every lookup on it, so asking the registry about any other style would be
+    inventing a verdict the proxy never forms — an `openai`-style `model` is the host's
+    own deployment name, and a registry entry that happens to share it describes a
+    different deployment."""
+    label = f"{surface} '{cid}'"
+    model = entry.get("model")
+    info = litellm_model_info(model)
+
+    if info is None:
+        if surface == "chat" and not (entry.get("context_window") and entry.get("max_output_tokens")):
+            fail(
+                f"{label}: litellm's registry has no entry for {model!r}, so neither "
+                "context_window nor max_output_tokens gets default-filled and the proxy "
+                "raises 'no context_window resolved' at startup. Give the entry a model id "
+                "litellm's registry carries, or state context_window and max_output_tokens "
+                "on it."
+            )
+            return
+        warn(
+            f"{label}: litellm's registry has no entry for {model!r}. Current bundles "
+            "accept that; an older one fails startup on it."
+        )
+        return
+
+    mode = info.get("mode")
+    if mode != surface:
+        fail(f"{label}: litellm reports {model!r} has mode={mode!r}, but this surface "
+             f"needs mode={surface!r}. The proxy raises on the mismatch at startup.")
+        return
+
+    if surface == "chat":
+        # Computed by litellm at call time rather than stored in the registry JSON, so
+        # this particular check exists only when the library is actually installed.
+        supported = set(info.get("supported_openai_params") or [])
+        absent = sorted({"tools", "response_format"} - supported)
+        if absent:
+            fail(f"{label}: {model!r} lacks OpenAI params Nexus relies on: {absent}. "
+                 "The proxy rejects the model at startup.")
+            return
+        window, window_clamped = _resolve_budget(entry.get("context_window"), info.get("max_input_tokens"))
+        output, output_clamped = _resolve_budget(entry.get("max_output_tokens"), info.get("max_output_tokens"))
+        for field, value in (("context_window", window), ("max_output_tokens", output)):
+            if not value:
+                fail(f"{label}: {field} resolves to nothing — litellm knows {model!r} but "
+                     f"records no {field}, so set it on the model entry.")
+                return
+        for field, clamped, ceiling in (
+            ("context_window", window_clamped, window),
+            ("max_output_tokens", output_clamped, output),
+        ):
+            if clamped:
+                warn(f"{label}: configured {field} exceeds what litellm records for "
+                     f"{model!r}; the proxy will clamp it to {ceiling}.")
+        ok(f"{label}: {model!r} is mode=chat with tools + response_format "
+           f"(context_window {window}, max_output_tokens {output})")
+        return
+
+    ok(f"{label}: {model!r} is mode={mode}")
+
+
+def check_model_registry(inp):
+    """Ask litellm what the inference proxy asks it at startup, so a bad model id fails
+    here instead of crash-looping the proxy after a 25-minute install.
+
+    api_style='litellm' entries only: that is the only style the proxy looks up, and
+    asking the registry about any other would invent a verdict the proxy never forms.
+
+    What the proxy does with the answer: a mode MISMATCH fails startup, as
+    does a chat model whose supported_openai_params lack tools / response_format. A
+    registry MISS is tolerated by current bundles -- except for a litellm-style chat
+    model, where the miss also means no budget is default-filled and startup fails on
+    the unresolved context_window.
+    """
+    section("Model ids vs litellm's registry")
+    targets, _source = _catalog_targets(inp)
+
+    # The three chat tiers name one deployment; look it up once.
+    seen = set()
+    routed = []
+    for surface, cid, entry in targets:
+        if entry.get("api_style") != "litellm":
+            continue
+        key = (surface, entry.get("model"))
+        if key in seen:
+            continue
+        seen.add(key)
+        routed.append((surface, cid, entry))
+
+    if not routed:
+        ok("no api_style='litellm' models in the catalog; the proxy looks nothing up")
+        return
+    if litellm_or_none() is None:
+        skip(f"litellm is not installed, so {len(routed)} litellm-style model id(s) were "
+             f"not checked against the registry the proxy consults. Re-run with: {litellm_hint()}")
+        return
+    print(f"  {DIM}(litellm {_litellm_version() or 'version unknown'}){RESET}")
+    for surface, cid, entry in routed:
+        _check_registry_entry(surface, cid, entry)
+
+
+MODEL_FAMILIES = ("gpt5", "claude")
+
+
+def infer_model_family(model):
+    """The inference proxy's own rule, which is what
+    decides the request quirks a chat call gets. `gpt5_series` counts: it is LiteLLM's own
+    Azure routing spelling for the family. Deliberately excludes o-series and GPT-4o."""
     m = (model or "").lower()
-    return m.startswith("gpt-5") or "/gpt-5" in m or "gpt-5." in m
+    if m.startswith("gpt-5") or "/gpt-5" in m or "gpt-5." in m or "gpt5_series" in m:
+        return "gpt5"
+    if "claude" in m:
+        return "claude"
+    return None
 
 
-def _request_dimensions(inp, embed):
-    """Whether the generated catalog sets request_dimensions (same rule as gen-values)."""
-    explicit = get(inp, "embedding.requestDimensions")
-    if explicit is None:
-        return str(embed).lower().startswith("text-embedding-3")
-    return bool(explicit)
+def resolved_model_family(model, declared=None):
+    """The family the proxy will act on: an operator-pinned `model_family` wins, since it
+    exists precisely for a deployment name that hides the family (`chat-prod` fronting
+    gpt-5), and inference from `model` fills in otherwise."""
+    return declared or infer_model_family(model)
+
+
+def _is_gpt5_family(model, declared=None):
+    return resolved_model_family(model, declared) == "gpt5"
+
+
+def _embedding_entry(inp):
+    """The embedding entry the embedding tier resolves to, or {} when there is no
+    overlay to read. Taking request_dimensions and dimension from here rather than from the
+    inputs keeps the probe aligned with any catalog, however it was produced."""
+    targets, source = _catalog_targets(inp)
+    if source != "generated":
+        return {}
+    tiers = get(load_gen("values.self-hosted.yaml"), "nexus.inference.tiers") or {}
+    wanted = tiers.get("embedding")
+    entries = [(cid, e) for surface, cid, e in targets if surface == "embedding"]
+    for cid, entry in entries:
+        if cid == wanted:
+            return entry
+    return entries[0][1] if entries else {}
 
 
 def _gateway_call_failed(url, status, body):
@@ -465,6 +920,8 @@ def check_live_gateway(inp):
     shaped the way the inference proxy shapes them, so a green probe is evidence
     about the traffic the install will actually send.
     """
+    global _gateway_probed
+    _gateway_probed = True
     section("Gateway credentials (live)")
     gw = get(inp, "inference.gateway")
     if not gw:
@@ -593,7 +1050,8 @@ def _check_gateway_embed(inp, endpoint, embed, query, call_headers):
     field) still leaves the rerank leg to run."""
     embed_url = f"{endpoint}/deployments/{embed}/embeddings{query}"
     embed_body = {"model": embed, "input": "ping"}
-    want_dim = get(inp, "embedding.dimension") if _request_dimensions(inp, embed) else None
+    catalog_embed = _embedding_entry(inp)
+    want_dim = catalog_embed.get("dimension") if catalog_embed.get("request_dimensions") else None
     if want_dim is not None:
         embed_body["dimensions"] = want_dim
     status, body = _http_post(embed_url, json.dumps(embed_body).encode(), call_headers)
@@ -613,10 +1071,9 @@ def _check_gateway_embed(inp, endpoint, embed, query, call_headers):
         fail(
             f"asked the gateway for dimensions={want_dim} and got a {len(vector)}-wide "
             "vector: the request was dropped somewhere on the path, so every embedding "
-            "would be the wrong width for the index. Either the gateway strips the "
-            "field or the deployment is not Matryoshka-capable — set "
-            "embedding.requestDimensions: false and embedding.dimension to the width "
-            "the model actually emits."
+            "would be the wrong width for the index. Either the gateway strips the field "
+            "or the deployment cannot emit a narrower width on request — turn "
+            f"request_dimensions off and set the dimension to {len(vector)}."
         )
 
 
@@ -654,6 +1111,387 @@ def _http_post(url, data, headers, timeout=20):
         return e.code, e.read().decode(errors="replace")
     except Exception as e:
         return 0, f"{type(e).__name__}: {e}"
+
+
+def _classify_probe(status, detail):
+    """Map a probe outcome to ("ok" | "warn" | "fail", reason). A 429 counts as proof:
+    the provider had to authenticate the key before it could rate-limit it."""
+    if status == 200:
+        return "ok", "reachable, key accepted"
+    if status in (401, 403):
+        return "fail", f"auth rejected ({status}) -- bad key, or a key for another resource"
+    if status in (400, 404, 422):
+        return "fail", f"rejected ({status}) -- wrong model id, endpoint, or params: {detail}"
+    if status == 429:
+        return "ok", "rate-limited (429) -- the key is valid"
+    if isinstance(status, int) and 500 <= status < 600:
+        return "warn", f"provider error ({status}); could not verify: {detail}"
+    return "warn", f"could not reach the provider: {detail}"
+
+
+def _report_probe(label, status, detail, extra=""):
+    """Print one probe verdict. True when the call proved the path works."""
+    state, reason = _classify_probe(status, detail)
+    if state == "fail":
+        fail(f"{label}: {reason}")
+        return False
+    if state == "warn":
+        warn(f"{label}: {reason}")
+        return False
+    ok(f"{label}: {reason}{extra}")
+    return True
+
+
+def _probe_key(inp, key_path, surface):
+    """The provider key for one surface, or "" after reporting why it is missing."""
+    key_env = get(inp, key_path)
+    key = os.environ.get(key_env or "", "")
+    if not key:
+        fail(f"{key_path}={key_env!r} holds nothing in this shell, so {surface} cannot be "
+             "probed. Export it and re-run.")
+    return key
+
+
+def _litellm_call(fn, **kwargs):
+    """Run one litellm call the way the proxy's adapter does, reducing it to
+    (status, detail). num_retries=0 keeps a dead endpoint from costing three timeouts;
+    drop_params mirrors the adapter, which lets litellm discard params the route rejects."""
+    try:
+        return 200, "", fn(num_retries=0, drop_params=True, timeout=20, **kwargs)
+    except Exception as e:
+        detail = str(e)[:300]
+        return _recover_status(getattr(e, "status_code", None), detail), detail, None
+
+
+def _recover_status(status, detail):
+    """litellm's rerank path reports every upstream failure as APIConnectionError with
+    status_code 500, which would file a rejected key under "transient provider error" and
+    let a broken credential pass as a warning. The upstream body survives in the message,
+    so read the real status back out of it. Providers that answer in prose rather than a
+    status (Voyage: `{"detail":"Provided API key is invalid."}`) are recognised by the
+    wording -- a rejected key has to fail, not warn."""
+    if status != 500:
+        return status
+    body = detail[detail.index("{"):] if "{" in detail else ""
+    found = re.search(r"\b(4\d\d)\b", body)
+    if found:
+        return int(found.group(1))
+    if re.search(r"api[ _-]?key|unauthori|authenticat|forbidden|invalid[ _-]token",
+                 detail, re.IGNORECASE):
+        return 401
+    return status
+
+
+def _probe_output_budget(model, configured=None):
+    """The max_tokens the probe asks for: 512, which a reasoning model's internal tokens
+    will not exhaust before any visible output, lowered to whatever the entry configures or
+    the registry records -- the proxy clamps the same way, and an operator can tighten a
+    budget, not loosen it."""
+    info = litellm_model_info(model) or {}
+    resolved, _ = _resolve_budget(configured, info.get("max_output_tokens"))
+    if isinstance(resolved, int) and 0 < resolved < 512:
+        return resolved
+    return 512
+
+
+# The env var each generated api_key_ref is fed from; only customer.yaml knows the name.
+KEY_ENV_INPUTS = {
+    "llm-key": "inference.llmKeyEnv",
+    "embedding-key": "inference.embeddingKeyEnv",
+    "rerank-key": "inference.rerankKeyEnv",
+}
+SURFACE_KEY_INPUTS = {
+    "chat": "inference.llmKeyEnv",
+    "embedding": "inference.embeddingKeyEnv",
+    "rerank": "inference.rerankKeyEnv",
+}
+
+
+def _entry_key(inp, entry, surface):
+    """The provider key for one catalog entry, or "" after reporting why it is missing."""
+    path = KEY_ENV_INPUTS.get(entry.get("api_key_ref")) or SURFACE_KEY_INPUTS[surface]
+    return _probe_key(inp, path, surface)
+
+
+def _probe_chat_entry(inp, lite, entry):
+    model = entry.get("model")
+    key = _entry_key(inp, entry, "chat")
+    if not key:
+        return
+    kwargs = {
+        "model": model,
+        "api_key": key,
+        "messages": [{"role": "user", "content": "ping"}],
+    }
+    if entry.get("base_url"):
+        kwargs["base_url"] = entry["base_url"]
+    # The rename mirrors the proxy; the other spelling would probe a request shape the
+    # install never sends.
+    budget = "max_completion_tokens" if _is_gpt5_family(model, entry.get("model_family")) else "max_tokens"
+    kwargs[budget] = _probe_output_budget(model, entry.get("max_output_tokens"))
+    status, detail, _ = _litellm_call(lite.completion, **kwargs)
+    _report_probe(f"chat {model!r}", status, detail, f" (via litellm, {budget})")
+
+
+def _probe_embed_entry(inp, lite, entry):
+    model = entry.get("model")
+    key = _entry_key(inp, entry, "embedding")
+    if not key:
+        return
+    declared = entry.get("dimension") if isinstance(entry.get("dimension"), int) else None
+    asks_for_width = bool(entry.get("request_dimensions"))
+    kwargs = {"model": model, "api_key": key, "input": ["ping"]}
+    if entry.get("base_url"):
+        # litellm's embedding entry point takes api_base, not base_url.
+        kwargs["api_base"] = entry["base_url"]
+    if asks_for_width and declared:
+        kwargs["dimensions"] = declared
+    status, detail, resp = _litellm_call(lite.embedding, **kwargs)
+    if not _report_probe(f"embedding {model!r}", status, detail, " (via litellm)"):
+        return
+    # A 429 counts as a pass (the key was authenticated) but carries no vector to measure.
+    if not declared or resp is None:
+        return
+    try:
+        data = resp["data"] if isinstance(resp, dict) else resp.data
+        width = len(data[0]["embedding"])
+    except (TypeError, KeyError, IndexError, AttributeError):
+        fail(f"embedding response for {model!r} carries no data[0].embedding")
+        return
+    _report_embed_width(model, declared, asks_for_width, width)
+
+
+def _report_embed_width(model, declared, asks_for_width, width):
+    # Compared whether or not a reduction was asked for: the invariant is the index width.
+    if width == declared:
+        how = f"honored dimensions={declared}" if asks_for_width else f"emits {width} natively"
+        ok(f"{model!r} {how} -- matches the catalog's dimension")
+    elif asks_for_width:
+        fail(
+            f"asked {model!r} for dimensions={declared} and got a {width}-wide vector, so "
+            "every embedding would be the wrong width for the index. Either the deployment "
+            "cannot emit a narrower width on request, or the field was dropped on the way "
+            f"-- turn request_dimensions off and set the dimension to {width}."
+        )
+    else:
+        fail(
+            f"{model!r} returns {width}-wide vectors but the catalog declares {declared}, "
+            "so ingest would write vectors the index cannot accept. Set "
+            f"the dimension to {width}, or set request_dimensions if the model can emit a "
+            "narrower width on request."
+        )
+
+
+def _openai_call(entry, key, route, body):
+    """One request the way the proxy's openai adapter makes it: the SDK appends the route
+    to base_url and derives no path of its own, api_version rides as the `api-version`
+    query param, and extra_headers travel as default headers."""
+    url = entry["base_url"].rstrip("/") + route
+    if entry.get("api_version"):
+        url += ("&" if "?" in url else "?") + "api-version=" + urllib.parse.quote(entry["api_version"])
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+    headers.update(entry.get("extra_headers") or {})
+    for header, ref in (entry.get("extra_header_refs") or {}).items():
+        value = os.environ.get(ref, "")
+        if not value:
+            warn(f"extra_header_refs names env var {ref!r} for header {header!r}, which "
+                 "holds nothing in this shell; the probe sends the call without it")
+            continue
+        headers[header] = value
+    status, text = _http_post(url, json.dumps(body).encode(), headers)
+    return url, status, text
+
+
+def _probe_openai_chat_entry(inp, entry):
+    model = entry.get("model")
+    key = _entry_key(inp, entry, "chat")
+    if not key:
+        return
+    budget = "max_completion_tokens" if _is_gpt5_family(model, entry.get("model_family")) else "max_tokens"
+    configured = entry.get("max_output_tokens")
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": "ping"}],
+        budget: min(configured, 512) if isinstance(configured, int) and configured > 0 else 512,
+    }
+    url, status, text = _openai_call(entry, key, "/chat/completions", body)
+    _report_probe(f"chat {model!r}", status, text, f" ({url}, {budget})")
+
+
+def _probe_openai_embed_entry(inp, entry):
+    model = entry.get("model")
+    key = _entry_key(inp, entry, "embedding")
+    if not key:
+        return
+    declared = entry.get("dimension") if isinstance(entry.get("dimension"), int) else None
+    asks_for_width = bool(entry.get("request_dimensions"))
+    body = {"model": model, "input": "ping"}
+    if asks_for_width and declared:
+        body["dimensions"] = declared
+    url, status, text = _openai_call(entry, key, "/embeddings", body)
+    if not _report_probe(f"embedding {model!r}", status, text, f" ({url})"):
+        return
+    if not declared:
+        return
+    try:
+        width = len(json.loads(text)["data"][0]["embedding"])
+    except (ValueError, TypeError, KeyError, IndexError):
+        fail(f"embedding response from {url} carries no data[0].embedding: {text[:200]}")
+        return
+    _report_embed_width(model, declared, asks_for_width, width)
+
+
+def _pinecone_call(entry, key, route, body):
+    """One request the way the proxy's pinecone adapter makes it: Api-Key plus a pinned
+    X-Pinecone-API-Version, and base_url defaulted when the entry names none."""
+    base = (entry.get("base_url") or DEFAULT_PINECONE_BASE_URL).rstrip("/")
+    url = base + route
+    headers = {
+        "Content-Type": "application/json",
+        "Api-Key": key,
+        "X-Pinecone-API-Version": entry.get("api_version") or DEFAULT_PINECONE_API_VERSION,
+    }
+    status, text = _http_post(url, json.dumps(body).encode(), headers)
+    return url, status, text
+
+
+def _pinecone_key():
+    """Pinecone-style models take the caller's key per request, so the catalog holds none.
+    Probe with the deployment's own key from the environment."""
+    key = os.environ.get("PINECONE_API_KEY", "")
+    if not key:
+        skip("PINECONE_API_KEY is not set in this shell, so the pinecone-style models were "
+             "not called. They take the caller's key per request, so the catalog carries "
+             "none to probe with.")
+    return key
+
+
+def _probe_pinecone_embed_entry(inp, entry, key):
+    model = entry.get("model")
+    declared = entry.get("dimension") if isinstance(entry.get("dimension"), int) else None
+    url, status, text = _pinecone_call(entry, key, "/embed", {
+        "model": model,
+        "inputs": [{"text": "ping"}],
+        "parameters": {"input_type": "passage", "truncate": "END"},
+    })
+    if not _report_probe(f"embedding {model!r}", status, text, f" ({url})"):
+        return
+    try:
+        item = json.loads(text)["data"][0]
+    except (ValueError, TypeError, KeyError, IndexError):
+        fail(f"embedding response from {url} carries no data[0]: {text[:200]}")
+        return
+    if "sparse_values" in item or "sparse_indices" in item:
+        fail(f"{model!r} returned a sparse embedding; the proxy rejects sparse models "
+             "because Nexus has no slot for them — choose a dense Pinecone model")
+        return
+    if declared and "values" in item:
+        _report_embed_width(model, declared, False, len(item["values"]))
+
+
+def _probe_pinecone_rerank_entry(inp, entry, key):
+    model = entry.get("model")
+    url, status, text = _pinecone_call(entry, key, "/rerank", {
+        "model": model,
+        "query": "ping",
+        "documents": [{"text": "ping"}, {"text": "pong"}],
+        "return_documents": False,
+        "parameters": {"truncate": "END"},
+    })
+    _report_probe(f"rerank {model!r}", status, text, f" ({url})")
+
+
+def _probe_rerank_entry(inp, lite, entry):
+    model = entry.get("model")
+    key = _entry_key(inp, entry, "rerank")
+    if not key:
+        return
+    kwargs = {
+        "model": model,
+        "api_key": key,
+        "query": "ping",
+        "documents": ["ping", "pong"],
+        "return_documents": False,
+    }
+    if entry.get("base_url"):
+        kwargs["api_base"] = entry["base_url"]
+    status, detail, _ = _litellm_call(lite.rerank, **kwargs)
+    where = entry.get("base_url") or "litellm's default endpoint for the provider"
+    _report_probe(f"rerank {model!r}", status, detail, f" (via litellm, {where})")
+
+
+PROBES = {"chat": _probe_chat_entry, "embedding": _probe_embed_entry, "rerank": _probe_rerank_entry}
+OPENAI_PROBES = {"chat": _probe_openai_chat_entry, "embedding": _probe_openai_embed_entry}
+PINECONE_PROBES = {"embedding": _probe_pinecone_embed_entry, "rerank": _probe_pinecone_rerank_entry}
+
+
+def check_live_models(inp):
+    """One tiny real call per model in the catalog -- so a bad or wrong-resource key, an
+    endpoint the deployment doesn't live on, a misspelled deployment name, or an embedding
+    width that doesn't match the index fails here instead of at first ingest.
+
+    Every model / base_url / dimension probed comes from the catalog, and each entry is
+    called by the client its api_style names, so the probe sends what the proxy will send.
+    An entry whose bearer comes from the OAuth2 credential has no static key to call with,
+    so the gateway's own probe stands in for it, and runs from here rather than waiting on
+    a flag the operator may not pass.
+    """
+    gateway = get(inp, "inference.gateway")
+    if gateway and not _gateway_probed:
+        check_live_gateway(inp)
+    section("Model endpoints (live)")
+    targets, _source = _catalog_targets(inp)
+
+    # The three chat tiers name one deployment; call it once.
+    seen = set()
+    deduped = []
+    for surface, cid, entry in targets:
+        key = (surface, entry.get("api_style"), entry.get("model"), entry.get("base_url"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((surface, cid, entry))
+
+    routed, direct, pinecone = [], [], []
+    for surface, cid, entry in deduped:
+        style = entry.get("api_style")
+        label = f"{surface} '{cid}'"
+        # Dispatch on the credential, not the style: whatever its style, an entry drawing
+        # its bearer from the OAuth2 credential has no static key to call with.
+        if entry.get("credential_ref"):
+            if _gateway_probed:
+                ok(f"{label}: draws its bearer from the OAuth2 credential; the gateway "
+                   "probe above is its call check")
+            else:
+                skip(f"{label}: draws its bearer from the OAuth2 credential, which only "
+                     "--live-gateway mints, and no gateway probe ran")
+        elif style == "litellm":
+            routed.append((surface, cid, entry))
+        elif style == "openai" and surface in OPENAI_PROBES:
+            direct.append((surface, cid, entry))
+        elif style == "pinecone" and surface in PINECONE_PROBES:
+            pinecone.append((surface, cid, entry))
+        else:
+            warn(f"{label}: api_style {style!r} is not probed by --live-models, so nothing "
+                 "here calls it")
+
+    for surface, _cid, entry in direct:
+        OPENAI_PROBES[surface](inp, entry)
+
+    if pinecone:
+        key = _pinecone_key()
+        for surface, _cid, entry in (pinecone if key else []):
+            PINECONE_PROBES[surface](inp, entry, key)
+
+    if not routed:
+        return
+    lite = litellm_or_none()
+    if lite is None:
+        skip(f"litellm is not installed, so {len(routed)} litellm-style model(s) were not "
+             f"called. It is the client the proxy uses for them. Re-run with: {litellm_hint()}")
+        return
+    for surface, _cid, entry in routed:
+        PROBES[surface](inp, lite, entry)
 
 
 def check_registry(inp):
@@ -1132,6 +1970,9 @@ def main():
     ap.add_argument("--only-live-gateway", action="store_true",
                     help="run ONLY the live gateway check, skipping every static check "
                          "(for proving gateway credentials from a bare host)")
+    ap.add_argument("--live-models", action="store_true",
+                    help="also make one real chat + embedding + rerank call straight at "
+                         "the provider (needs the inference.*KeyEnv vars in this shell)")
     args = ap.parse_args()
 
     global _gen_dir
@@ -1147,11 +1988,12 @@ def main():
     # credentials on a bare host without a fully-filled customer.yaml.
     if args.only_live_gateway:
         print(f"Preflight: {args.inputs}  (live gateway only)")
+        if args.live_models:
+            warn("--only-live-gateway skips every other check, so --live-models did not run")
         check_live_gateway(inp)
     else:
         print(f"Preflight: {args.inputs}" + ("  (static + live)" if args.live else "  (static)"))
         check_dimension(inp)
-        check_embedding_width(inp)
         provider = storage_provider(inp)
         if provider == "s3":
             check_buckets_s3(inp)
@@ -1160,6 +2002,11 @@ def main():
         else:
             check_containers(inp)
         check_inference(inp)
+        catalog = _catalog_present(inp)
+        if catalog:
+            check_embedding_width(inp)
+            check_catalog_structure(inp)
+            check_model_registry(inp)
         check_registry(inp)
         if provider == "s3":
             check_storage_irsa(inp)
@@ -1173,12 +2020,18 @@ def main():
             check_live(inp)
         if args.live_gateway:
             check_live_gateway(inp)
+        if args.live_models and catalog:
+            check_live_models(inp)
 
     print()
+    skipped = f", {_skips} skipped" if _skips else ""
     if _fails:
-        print(f"{RED}PREFLIGHT FAILED{RESET}: {_fails} error(s), {_warns} warning(s).")
+        print(f"{RED}PREFLIGHT FAILED{RESET}: {_fails} error(s), {_warns} warning(s){skipped}.")
         sys.exit(1)
-    print(f"{GREEN}PREFLIGHT PASSED{RESET}: 0 errors, {_warns} warning(s).")
+    print(f"{GREEN}PREFLIGHT PASSED{RESET}: 0 errors, {_warns} warning(s){skipped}.")
+    if _skips:
+        print(f"  {DIM}Some checks did not run. For the litellm-backed ones: "
+              f"{litellm_hint()}{RESET}")
 
 
 if __name__ == "__main__":
