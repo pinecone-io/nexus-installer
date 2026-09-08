@@ -53,8 +53,9 @@ Before running anything:
   you; otherwise create them before install. Names derive from your stem: `<stem>-db`
   plus `<stem>-nexus-{source,knowledge,archive,traces,snapshots,library}`.
 - **Model deployments** (chat, embedding, rerank) on OpenAI-compatible endpoints. The
-  proxy validates every model id against LiteLLM's registry at startup, so the ids must be
-  ones LiteLLM maps — chat `gpt-5`, embedding `text-embedding-3-small`. Rerank is
+  proxy looks every model id up in LiteLLM's registry at startup, so ids LiteLLM maps are
+  the safe choice — chat `gpt-5`, embedding `text-embedding-3-small`. For chat the name is
+  effectively required (see "Chat deployment naming"). Rerank is
   `<rerankProvider>/<rerankDeployment>`: `azure_ai` (recommended) with LiteLLM's canonical
   name (e.g. `cohere-rerank-v4.0-fast`) for the current Cohere reranker, or `cohere` with
   the older `rerank-v3.5` — see `customer.example.yaml`. **The embedding model's dimension
@@ -95,6 +96,7 @@ export NEXUS_GATEWAY_SUBSCRIPTION_KEY=...  # inference.gateway.subscriptionKeyEn
 # 1. Generate overlays + validate (no cluster access needed):
 python3 gen-values.py
 python3 preflight.py                       # static invariants; fix any FAIL before continuing
+pip install 'litellm==1.96.2'              # optional, once: adds the model-id checks (still offline)
 
 # 2. Verify what's staged: list the exact images + chart the install pulls (writes
 #    generated/manifest.txt, which preflight --live verifies). It reads the chart from your
@@ -110,6 +112,7 @@ helm registry login <registry.base host>                    # your registry
 # 4. Optional live checks (containers, image presence, identity in the cloud):
 python3 preflight.py --live
 python3 preflight.py --live-gateway        # gateway path only — run it before installing
+python3 preflight.py --live-models         # one real chat + embedding + rerank call at the provider
 
 # 5. Dry-run the whole plan (touches nothing), then install (helm pulls the chart from
 #    your registry, using the login from step 2):
@@ -213,9 +216,25 @@ them. So a wrong secret, an unauthorized scope, the wrong gateway environment, a
 embeddings route, or a gateway that drops the `dimensions` request fails here in seconds
 instead of partway through the install.
 
+## Chat deployment naming (direct path)
+
+The catalog spells your chat model `azure/<chatDeployment>`, and the proxy asks litellm's
+registry for its token budgets. A name litellm knows (`gpt-5`, `gpt-5-mini`, `gpt-4o`) needs
+nothing. A name of your own (`gpt5-prod`) has no registry entry, so nothing fills the budgets
+and the proxy refuses to start — rename the deployment, or set `context_window` and
+`max_output_tokens` on the catalog's chat entries by hand.
+
+The name also decides the **model family**, which sets the request shape: a gpt-5-family
+model needs `max_completion_tokens` and `reasoning_effort` with tools. The proxy infers it
+from the model id, and most models have no family and need none — but a name that *hides*
+one (`chat-prod` fronting gpt-5) needs `model_family: gpt5` set on those entries, since
+nothing can infer it.
+
 ## What preflight checks
 
-Static (values only, always safe):
+Static (values only, always safe). The catalog checks read the emitted
+`generated/values.self-hosted.yaml` — the artifact that reaches the cluster — and SKIP
+together when it is absent:
 
 - **Dimension agreement** — the embedding dimension equals every place the dimension
   appears, and the generated `global.staticIndex` — the copy the data-plane services
@@ -224,6 +243,16 @@ Static (values only, always safe):
 - **Inference catalog** — the self-hosted profile is selected, every credential ref (key,
   gateway client, subscription key) has a `providerKeys` entry, and all tier slots resolve
   to a defined catalog entry.
+- **Catalog entry shape** — every model and credential entry satisfies the proxy's own
+  schema: required fields present, ceilings and prices in range, no field the schema
+  forbids, and no field it does not declare (it rejects extras, so a typo fails startup).
+  The generator gets these right; this is the guard for a hand-edited overlay.
+- **Model ids vs litellm's registry** — for `api_style: litellm` entries only, since that is
+  the only style the proxy looks up. Asks litellm what the proxy asks it at startup: the
+  surface's `mode` matches, a chat model carries the `tools` / `response_format` params
+  Nexus needs, and its budgets resolve. Reads the registry bundled in the pinned wheel, so
+  it stays offline and gives the same answers the proxy will. **Needs litellm** (see Quick
+  start); without it these SKIP and the summary says so.
 - **Registry** — the image override is set and the pull-secret server matches the base.
 - **Storage auth** — `workload_identity` has a `clientId`; `shared_key` has an
   `existingSecret`.
@@ -246,6 +275,14 @@ index, or that gives the two halves different ones, is refused.
 
 Live gateway (`--live-gateway`, opt-in, makes real HTTP calls): mints a token and makes one
 1-token chat completion plus one tiny embedding call through the gateway — see above.
+
+Live models (`--live-models`, opt-in, makes real HTTP calls): one real call per model in the
+generated catalog, issued by the client that model's `api_style` names — so the probe sends
+what the proxy will send, and a bad key, a wrong endpoint or a misspelled deployment fails in
+seconds. The embedding leg **measures** the returned vector width against the catalog's
+dimension. An entry whose bearer comes from the gateway credential has no static key to call
+with, so the gateway probe stands in for it and runs from here too. Needs the relevant key
+env vars exported, and litellm for the litellm-style legs.
 
 ## Terraform hand-off (greenfield) — optional
 
