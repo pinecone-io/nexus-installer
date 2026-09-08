@@ -26,7 +26,7 @@ Individual names can still be overridden (`cluster_name`, `bucket_name`, ...).
 - VPC, an internet gateway, one NAT gateway, and — across `az_count` (>= 2) AZs — a `/20` private
   subnet per AZ (node + pod IPs) plus a `/24` public subnet per AZ (NAT egress, optional ALB).
   See [networking](#networking--sizing-the-node-subnet) for why the private subnet is large.
-- EKS: single managed node group (2× `m6i.2xlarge`, provisional pending load sizing) across the
+- EKS: single managed node group (2× `m6i.2xlarge` by default — see [sizing](#sizing)) across the
   private subnets, with the `vpc-cni`, `kube-proxy`, `coredns`, and `aws-ebs-csi-driver` addons.
   `vpc-cni` runs with prefix delegation on by default. API-mode access with the creator
   bootstrapped as cluster-admin.
@@ -74,11 +74,30 @@ How the chart consumes these:
 `install/gen-values.py` renders these into `values.s3.yaml` from `customer.yaml`. This module
 outputs the **bucket prefix**, the **region**, and the **IRSA role ARN**.
 
+## Sizing
+
+The chart's `sizing` class and the node group have to agree — the install's preflight measures the
+cluster and fails if they do not. Defaults here are `small`.
+
+| `sizing` | `node_count` (min/max) | `node_instance_type` | `node_disk_size_gb` | `az_count` | cluster total |
+|---|---|---|---|---|---|
+| `small` | 2 (2/3) | `m6i.2xlarge` | 100 | 2 | 16 vCPU / 64 GiB |
+| `medium` | 3 (3/5) | `m6i.4xlarge` | 300 | 3 | 48 vCPU / 192 GiB |
+
+`medium` needs the 300 GB disk: the DB services cache on the node disk, and one of them grows to
+100 GiB on its own, which a single node has to hold. `az_count = 3` puts one node in each AZ, so the
+cluster keeps serving through the loss of a zone.
+
+Moving an existing cluster from `small` to `medium` replaces its nodes: changing
+`node_instance_type` or `node_disk_size_gb` replaces the managed node group. `node_count` sets the
+group's size only at creation and is ignored on later applies, so raise `node_min_count` to grow an
+existing group. Plan a maintenance window, or stand up a new cluster at `medium` and cut over.
+
 ## Prerequisites
 
 - AWS credentials in the environment (`AWS_PROFILE` or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`)
   with rights to create VPC/EKS/IAM/S3; `terraform >= 1.5`.
-- Service quota for the chosen instance type in the region.
+- Service quota for the chosen instance type in the region (16 vCPU for `small`, 48 for `medium`).
 - A region offering at least `az_count` AZs (all commercial regions do for the default of 2).
 
 ## Pre-apply IAM check

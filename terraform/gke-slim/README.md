@@ -28,8 +28,8 @@ Individual names can still be overridden (`cluster_name`, `blob_prefix`, ...).
   Router + Cloud NAT give nodes egress. See [networking](#networking--sizing-the-pod-range) for
   why the pod range is the one sized large.
 - GKE: a **regional** cluster (control plane + nodes across the region's zones) with **Workload
-  Identity** enabled (`<project>.svc.id.goog`) and a single vanilla node pool (`e2-standard-8`,
-  provisional pending load sizing), on `GKE_METADATA` so pods can mint Workload Identity tokens.
+  Identity** enabled (`<project>.svc.id.goog`) and a single vanilla node pool (`e2-standard-8` by
+  default — see [sizing](#sizing)), on `GKE_METADATA` so pods can mint Workload Identity tokens.
   GKE ships CoreDNS, the GCE ingress controller, and a default StorageClass in-cluster, so there
   are no addons to declare. Control plane **and** node pool run **1.35+**, minimum
   `1.35.0-gke.3047000` — below that the GKE Dataplane V2 (Cilium) agent can delete a live pod's
@@ -86,13 +86,35 @@ How the chart consumes these:
 `install/gen-values.py` renders these into `values.gcs.yaml` from `customer.yaml`. This module
 outputs the **bucket prefix**, the **GSA email**, and the **project**.
 
+## Sizing
+
+The chart's `sizing` class and the node pool have to agree — the install's preflight measures the
+cluster and fails if they do not. Defaults here are `small`.
+
+The cluster is regional and the pool spans every zone the region has, so `node_count` is **per
+zone**: `node_count = 1` is three nodes in a three-zone region.
+
+| `sizing` | `node_count` | `node_machine_type` | `node_disk_size_gb` | cluster total |
+|---|---|---|---|---|
+| `small` | 1 (per zone) | `e2-standard-8` | 100 | one node per zone — 3 nodes, 24 vCPU / 96 GiB in a 3-zone region |
+| `medium` | 1 (per zone) | `n2-standard-16` | 300 | one node per zone — 3 nodes, 48 vCPU / 192 GiB in a 3-zone region |
+
+`medium` needs the 300 GB disk: the DB services cache on the node disk, and one of them grows to
+100 GiB on its own, which a single node has to hold. One node per zone means the cluster keeps
+serving through the loss of a zone.
+
+Moving an existing cluster from `small` to `medium` replaces its nodes: changing
+`node_machine_type` or `node_disk_size_gb` replaces the node pool. Plan a maintenance window, or
+stand up a new cluster at `medium` and cut over.
+
 ## Prerequisites
 
 - GCP credentials in the environment — Application Default Credentials
   (`gcloud auth application-default login`) or `GOOGLE_OAUTH_ACCESS_TOKEN` — for a principal with
   rights to create GKE/VPC/IAM/GCS in the project; `terraform >= 1.5`.
 - The **GKE**, **Compute**, and **IAM** APIs enabled on the project.
-- Quota for the chosen machine type in the region.
+- Quota for the chosen machine type in the region — the pool spans the region's zones, so
+  `node_count = 1` needs 8 vCPU per zone at `small` and 16 per zone at `medium`.
 
 ## Usage
 

@@ -80,19 +80,19 @@ variable "sku_tier" {
 # empty-nodeSelector scheduling path. A nexus-role pool here would hide that bug.
 
 variable "node_count" {
-  description = "Fixed node count for the single system pool. Provisional pending load sizing."
+  description = "Fixed node count for the single system pool. sizing small = 2, medium = 3."
   type        = number
   default     = 2
 }
 
 variable "node_vm_size" {
-  description = "VM size for the system pool. 2x D8s_v5 = 16 vCPU / 64 GiB. Provisional pending load sizing."
+  description = "VM size for the system pool. sizing small = Standard_D8s_v5 (2 nodes = 16 vCPU / 64 GiB), medium = Standard_D16s_v5 (3 nodes = 48 vCPU / 192 GiB)."
   type        = string
   default     = "Standard_D8s_v5"
 }
 
 variable "os_disk_size_gb" {
-  description = "OS disk size (GiB) per node."
+  description = "OS disk size (GiB) per node. sizing small = 100, medium = 300 — the DB services cache on the node disk and one of them grows to 100 GiB at medium."
   type        = number
   default     = 100
 }

@@ -54,31 +54,31 @@ variable "kubernetes_version" {
 # empty-nodeSelector scheduling path. A nexus-role group here would hide that bug.
 
 variable "node_count" {
-  description = "Desired node count for the single managed node group. Provisional pending load sizing."
+  description = "Desired node count for the single managed node group. sizing small = 2, medium = 3."
   type        = number
   default     = 2
 }
 
 variable "node_min_count" {
-  description = "Minimum node count for the managed node group."
+  description = "Minimum node count for the managed node group. sizing small = 2, medium = 3."
   type        = number
   default     = 2
 }
 
 variable "node_max_count" {
-  description = "Maximum node count for the managed node group."
+  description = "Maximum node count for the managed node group. sizing small = 3, medium = 5."
   type        = number
   default     = 3
 }
 
 variable "node_instance_type" {
-  description = "Instance type for the node group. m6i.2xlarge = 8 vCPU / 32 GiB. Provisional pending load sizing."
+  description = "Instance type for the node group. sizing small = m6i.2xlarge (8 vCPU / 32 GiB), medium = m6i.4xlarge (16 vCPU / 64 GiB)."
   type        = string
   default     = "m6i.2xlarge"
 }
 
 variable "node_disk_size_gb" {
-  description = "EBS root volume size (GiB) per node."
+  description = "EBS root volume size (GiB) per node. sizing small = 100, medium = 300 — the DB services cache on the node disk and one of them grows to 100 GiB at medium."
   type        = number
   default     = 100
 }
