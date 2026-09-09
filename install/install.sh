@@ -14,12 +14,9 @@
 # manifest against the cluster API (catches server-side rejections; needs kube access).
 #
 # --upgrade re-applies the full generated values set to the existing release with
-# `helm upgrade` (edit bundle.tag in customer.yaml first, mirror the new bundle, then
-# `--upgrade --dry-run`, then `--upgrade`). Upgrade mode never mints credentials: it
-# reuses .secrets.env, or recovers the credentials from the release when the file is
-# gone. It refuses a raw build id as bundle.tag, a release that is not in `deployed`
-# state, and any change to the index id or dimension the running release serves. Its
-# dry-run is always server-side, and a real upgrade is preceded by one.
+# `helm upgrade`, reusing (never minting) the release credentials. It refuses a raw build
+# id, a release not in `deployed` state, and any change to the index id or dimension the
+# release serves. Its dry-run is always server-side; a real upgrade runs one first.
 #
 # Re-runnable: the two generated release credentials are persisted (0600) to
 # install/.secrets.env on first run and reused, so re-installs keep stable creds.
@@ -92,9 +89,7 @@ OVERLAYS=(
 HELM_KUBE=(helm --kube-context "$KUBE_CONTEXT")
 
 # --- 2. every secret the run needs must be in the environment ----------------
-# Checked up front by NAME so a real run never stops halfway with some objects applied.
-# An upgrade re-sends every provider key, so a missing one would empty the running Secret;
-# hence checked under its dry-run too.
+# Checked up front by NAME; an upgrade re-sends every provider key, so its dry-run checks too.
 require_secret_envs() {
   local names=("$REGISTRY_PASSWORD_ENV") missing=() n
   [ "$STORAGE_AUTH" = "shared_key" ] && names+=("$STORAGE_KEY_ENV")
@@ -139,10 +134,8 @@ load_or_make_creds() {
   log "generated release credentials -> $SECRETS_ENV (0600). Keep this file safe; the session credential is the API login."
 }
 
-# Upgrade: a new JWT secret logs every user out and a new session credential changes the
-# API login, so whatever this shell holds is compared against the release and nothing is
-# minted; with no local copy at all the release's own values are recovered. Values reach
-# python on stdin, never in argv.
+# Upgrade: rotating either credential logs every user out, so the local copy is compared
+# against the release (recovered from it when absent) and nothing is minted.
 load_or_recover_creds() {
   local origin="" live mode="compare" recovered
   if [ -n "${NEXUS_JWT_SECRET:-}" ] && [ -n "${NEXUS_SESSION_CREDENTIAL:-}" ]; then
@@ -185,28 +178,34 @@ elif jwt.decode() != live_jwt or session.decode() != live_session:
   fi
 }
 
-# --- 4. build the secret values file -----------------------------------------
+if [ "$UPGRADE" = 1 ]; then
+  load_or_recover_creds
+elif [ "$DRY_RUN" = 0 ]; then
+  load_or_make_creds
+fi
+
+# --- 4. build the secret values files ----------------------------------------
 # Secrets travel in a values file, not --set: helm's strvals parser silently mangles
 # any value containing , = { } or \ (`ab,cd=` truncates to `ab`) and empties "null",
 # all at exit 0. It must be the LAST -f of every helm call, because the generated
 # values.self-hosted.yaml declares the same providerKeys as empty stubs and -f
 # precedence is last-wins.
-# Under dry-run every slot gets a placeholder and no real secret is read.
+# Every step before the apply (render, lint, server dry-run) gets placeholders, so no
+# real secret lands in $GEN_DIR; the real file is written only for helm install|upgrade.
+PLACEHOLDER_VALUES_FILE=""
 SECRET_VALUES_FILE=""
-trap 'if [ -n "$SECRET_VALUES_FILE" ]; then rm -f "$SECRET_VALUES_FILE"; fi' EXIT
+trap 'rm -f "${OUT_FILE:-}" "${PLACEHOLDER_VALUES_FILE:-}" "${SECRET_VALUES_FILE:-}"' EXIT
 
+SECRET_MODE=placeholder
 secret_or_placeholder() {
-  if [ "$DRY_RUN" = 1 ]; then printf 'dryrun-placeholder'; else secret_from_env "$1"; fi
+  if [ "$SECRET_MODE" = placeholder ]; then printf 'dryrun-placeholder'; else secret_from_env "$1"; fi
 }
 
+# write_secret_values_file placeholder|real -> sets OUT_FILE
 write_secret_values_file() {
   local jwt session rerank
-  if [ "$UPGRADE" = 1 ]; then
-    load_or_recover_creds
-  elif [ "$DRY_RUN" = 0 ]; then
-    load_or_make_creds
-  fi
-  if [ "$DRY_RUN" = 1 ]; then
+  SECRET_MODE="$1"
+  if [ "$SECRET_MODE" = placeholder ]; then
     jwt="dryrun-placeholder"
     session="dryrun-placeholder"
   else
@@ -245,8 +244,8 @@ write_secret_values_file() {
       "nexus/inference/providerKeys/$EMBED_KEY_REF" "$embed"
     )
   fi
-  SECRET_VALUES_FILE="$(mktemp)"
-  chmod 600 "$SECRET_VALUES_FILE"
+  OUT_FILE="$(mktemp)"
+  chmod 600 "$OUT_FILE"
   # JSON is valid YAML, and json.dump is the only serializer here that cannot
   # misquote a value. Values reach python on stdin so they never appear in argv.
   printf '%s\0' "${pairs[@]}" | python3 -c '
@@ -261,16 +260,17 @@ for path, value in zip(fields[::2], fields[1::2]):
         node = node.setdefault(part, {})
     node[parts[-1]] = value.decode()
 json.dump(values, sys.stdout)
-' > "$SECRET_VALUES_FILE"
+' > "$OUT_FILE"
 }
 
-write_secret_values_file
+write_secret_values_file placeholder
+PLACEHOLDER_VALUES_FILE="$OUT_FILE"
 
 # --- 5. render the resolved chart and check the data plane it would run -------
 RENDER="$GEN_DIR/render.yaml"
 log "rendering $CHART_REF $CHART_VERSION"
 helm template "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
-  -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" > "$RENDER" \
+  -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$PLACEHOLDER_VALUES_FILE" > "$RENDER" \
   || die "could not render $CHART_REF --version $CHART_VERSION (need 'helm registry login $REGISTRY_SERVER'? is the bundle mirrored?)"
 python3 - "$RENDER" "$STATIC_INDEX_ID" "$EMBED_DIMENSION" "$CHART_VERSION" <<'PY' || die "the bundle cannot serve the requested static index (see above)"
 import sys
@@ -323,7 +323,7 @@ server_dry_run() {
   kubectl --context "$KUBE_CONTEXT" create namespace "$NAMESPACE" --dry-run=client -o yaml \
     | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null
   "${HELM_KUBE[@]}" "$HELM_VERB" "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
-    -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" --dry-run=server > "$GEN_DIR/render.server.yaml"
+    -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$PLACEHOLDER_VALUES_FILE" --dry-run=server > "$GEN_DIR/render.server.yaml"
   log "server-side dry-run accepted by the cluster API ($KUBE_CONTEXT) -> $GEN_DIR/render.server.yaml"
 }
 
@@ -335,7 +335,7 @@ if [ "$DRY_RUN" = 1 ]; then
   log "helm lint"
   LINT_DIR="$(mktemp -d)"
   if helm pull "$CHART_REF" "${VERSION_ARGS[@]}" --untar --untardir "$LINT_DIR" 2>/dev/null; then
-    helm lint "${DEBUG_ARGS[@]}" "$LINT_DIR/nexus-installer" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" >&2 || warn "helm lint reported issues (above)"
+    helm lint "${DEBUG_ARGS[@]}" "$LINT_DIR/nexus-installer" "${OVERLAYS[@]}" -f "$PLACEHOLDER_VALUES_FILE" >&2 || warn "helm lint reported issues (above)"
   else
     warn "could not pull the chart to lint (need 'helm registry login $REGISTRY_SERVER'?); skipping lint"
   fi
@@ -378,6 +378,9 @@ if [ "$ASSUME_YES" != 1 ]; then
   fi
   read -r reply; [ "$reply" = "y" ] || [ "$reply" = "Y" ] || die "aborted"
 fi
+
+write_secret_values_file real
+SECRET_VALUES_FILE="$OUT_FILE"
 
 log "creating secrets"
 "$HERE/create-secrets.sh"

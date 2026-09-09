@@ -155,13 +155,19 @@ def storage_provider(inp):
     return get(inp, "storage.provider", "abs")
 
 
-def run(cmd):
-    """Run a command, returning (rc, stdout). Never raises."""
+def run3(cmd):
+    """Run a command, returning (rc, stdout, stderr). Never raises."""
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
-        return p.returncode, p.stdout.strip()
+        return p.returncode, p.stdout.strip(), p.stderr.strip()
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-        return 1, str(e)
+        return 1, "", str(e)
+
+
+def run(cmd):
+    """Run a command, returning (rc, stdout). Never raises."""
+    rc, out, _ = run3(cmd)
+    return rc, out
 
 
 # --------------------------------------------------------------------------- static
@@ -862,12 +868,15 @@ def check_upgrade(inp):
     promoted bundle, and serving the same index id + dimension the inputs name."""
     section("UPGRADE: live release")
     ctx = get(inp, "kubeContext")
-    rc, out = _helm(ctx, "status", RELEASE, "-o", "json")
+    rc, out, err = run3(["helm", "--kube-context", ctx, "-n", NAMESPACE, "status", RELEASE, "-o", "json"])
     if rc != 0:
-        fail(
-            f"no Helm release '{RELEASE}' in namespace '{NAMESPACE}' on context '{ctx}' — "
-            "nothing to upgrade. For a first install run install.sh without --upgrade."
-        )
+        if "release: not found" in err:
+            fail(
+                f"no Helm release '{RELEASE}' in namespace '{NAMESPACE}' on context '{ctx}' — "
+                "nothing to upgrade. For a first install run install.sh without --upgrade."
+            )
+        else:
+            fail(f"helm status {RELEASE} -n {NAMESPACE} on context '{ctx}' failed: {err or 'no error output'}")
         return
     status = get(_json_or_none(out) or {}, "info.status", "unknown")
     if status != "deployed":
