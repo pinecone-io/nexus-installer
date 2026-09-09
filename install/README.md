@@ -341,8 +341,7 @@ to run when the release is not in `deployed` state, when `bundle.tag` is not a p
 serves — each with the reason printed.
 
 Expect roughly two minutes during which the API does not answer while the pods roll to the
-new images; sessions and data are unaffected. Verify the upgrade by the images the pods run,
-not by what the console shows:
+new images; sessions and data are unaffected. Verify the upgrade by the images the pods run:
 
 ```bash
 kubectl --context <kubeContext> -n nexus get pods -o jsonpath='{range .items[*]}{.spec.containers[*].image}{"\n"}{end}' | sort -u

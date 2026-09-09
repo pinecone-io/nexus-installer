@@ -270,7 +270,8 @@ write_secret_values_file
 RENDER="$GEN_DIR/render.yaml"
 log "rendering $CHART_REF $CHART_VERSION"
 helm template "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
-  -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" > "$RENDER"
+  -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" > "$RENDER" \
+  || die "could not render $CHART_REF --version $CHART_VERSION (need 'helm registry login $REGISTRY_SERVER'? is the bundle mirrored?)"
 python3 - "$RENDER" "$STATIC_INDEX_ID" "$EMBED_DIMENSION" "$CHART_VERSION" <<'PY' || die "the bundle cannot serve the requested static index (see above)"
 import sys
 import yaml
