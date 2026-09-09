@@ -1,30 +1,37 @@
 #!/usr/bin/env bash
-# Install wrapper — orchestrates the whole install from the generated overlays:
+# Install wrapper — orchestrates the whole install (or upgrade) from the generated overlays:
 #
-#   preflight (static) -> secrets -> helm install (OCI by default; local-chart
-#   fallback for a non-default dimension/index id) with the generated overlays plus a
-#   temp values file carrying the generated JWT + session credentials and the model
-#   provider keys.
+#   preflight (static) -> render check -> secrets -> helm install|upgrade of the published
+#   OCI chart with the generated overlays plus a temp values file carrying the generated
+#   JWT + session credentials and the model provider keys.
+#
+# Before anything is applied the resolved chart is rendered and the data plane it would
+# run is checked against your inputs: the render must carry your staticIndex.id and
+# embedding.dimension, or the run stops.
 #
 # --dry-run runs preflight + lint + render and prints the full plan, creating no
 # secrets. =client (default) is offline (helm template); =server validates the
 # manifest against the cluster API (catches server-side rejections; needs kube access).
 #
+# --upgrade re-applies the full generated values set to the existing release with
+# `helm upgrade` (edit bundle.tag in customer.yaml first, mirror the new bundle, then
+# `--upgrade --dry-run`, then `--upgrade`). Upgrade mode never mints credentials: it
+# reuses .secrets.env, or recovers the credentials from the release when the file is
+# gone. It refuses a raw build id as bundle.tag, a release that is not in `deployed`
+# state, and any change to the index id or dimension the running release serves. Its
+# dry-run is always server-side, and a real upgrade is preceded by one.
+#
 # Re-runnable: the two generated release credentials are persisted (0600) to
 # install/.secrets.env on first run and reused, so re-installs keep stable creds.
-# NOTE: this chart is install-only — to iterate, uninstall + delete PVCs, then
-# re-run (see README). Never `helm upgrade` it.
 #
 # Usage:
-#   ./install.sh [--dry-run[=client|server]] [--path auto|oci|local] [--chart-path DIR]
-#                [-f customer.yaml] [--yes] [--debug]
+#   ./install.sh [--upgrade] [--dry-run[=client|server]] [-f customer.yaml] [--yes] [--debug]
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 DRY_RUN=0
-DRY_RUN_MODE="client"   # client = offline helm template; server = validate against the cluster API
-PATH_OVERRIDE="auto"
-CHART_PATH=""
+DRY_RUN_MODE=""         # client = offline helm template; server = validate against the cluster API
+UPGRADE=0
 ASSUME_YES=0
 DEBUG=0
 
@@ -32,8 +39,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --dry-run=*) DRY_RUN=1; DRY_RUN_MODE="${1#*=}" ;;
-    --path) PATH_OVERRIDE="$2"; shift ;;
-    --chart-path) CHART_PATH="$2"; shift ;;
+    --upgrade) UPGRADE=1 ;;
     -f|--inputs) INPUTS_FILE="$2"; shift ;;
     --yes|-y) ASSUME_YES=1 ;;
     --debug) DEBUG=1 ;;
@@ -42,7 +48,15 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-case "$DRY_RUN_MODE" in client|server) ;; *) die "--dry-run mode must be 'client' or 'server', got '$DRY_RUN_MODE'" ;; esac
+case "$DRY_RUN_MODE" in ""|client|server) ;; *) die "--dry-run mode must be 'client' or 'server', got '$DRY_RUN_MODE'" ;; esac
+if [ "$UPGRADE" = 1 ]; then
+  [ "$DRY_RUN_MODE" != "client" ] || die "--upgrade --dry-run is server-side (it compares against the live release); drop '=client'"
+  DRY_RUN_MODE="server"
+  HELM_VERB="upgrade"
+else
+  DRY_RUN_MODE="${DRY_RUN_MODE:-client}"
+  HELM_VERB="install"
+fi
 
 # Pass --debug through to helm only when asked (helm --debug is a firehose).
 DEBUG_ARGS=()
@@ -50,36 +64,56 @@ DEBUG_ARGS=()
 
 need helm
 need python3
+[ "$DRY_RUN_MODE" = "server" ] && need kubectl
 
 # --- 1. (re)generate overlays + inputs.env, then preflight -------------------
 log "generating overlays from $INPUTS_FILE"
 python3 "$HERE/gen-values.py" -f "$INPUTS_FILE" -o "$GEN_DIR"
 load_inputs_env
 
-log "running static preflight"
-python3 "$HERE/preflight.py" -f "$INPUTS_FILE" || die "preflight failed — fix the inputs above and re-run"
-
-# --- 2. resolve the install path (OCI vs local-chart) ------------------------
-RESOLVED_PATH="$INSTALL_PATH"   # from inputs.env: oci unless dim/id differ from baked
-[ "$PATH_OVERRIDE" != "auto" ] && RESOLVED_PATH="$PATH_OVERRIDE"
-
-if [ "$RESOLVED_PATH" = "oci" ]; then
-  CHART_REF="oci://$REGISTRY_BASE/nexus-installer"
-  VERSION_ARGS=(--version "$CHART_VERSION")
-  log "install path: OCI  ($CHART_REF --version $CHART_VERSION)"
+PREFLIGHT_ARGS=()
+if [ "$UPGRADE" = 1 ]; then
+  log "running static + upgrade preflight"
+  PREFLIGHT_ARGS=(--upgrade)
 else
-  [ -n "$CHART_PATH" ] || die "local-chart path selected (dimension/index id differ from the baked bundle) but --chart-path was not given. Point it at the chart checkout Pinecone provides, run remint-dbslim.sh for your dimension first, then re-run."
-  [ -d "$CHART_PATH" ] || die "--chart-path not a directory: $CHART_PATH"
-  CHART_REF="$CHART_PATH"
-  VERSION_ARGS=()
-  log "install path: local-chart  ($CHART_REF)"
+  log "running static preflight"
 fi
+python3 "$HERE/preflight.py" -f "$INPUTS_FILE" "${PREFLIGHT_ARGS[@]}" || die "preflight failed — fix the inputs above and re-run"
+
+CHART_REF="oci://$REGISTRY_BASE/nexus-installer"
+VERSION_ARGS=(--version "$CHART_VERSION")
+log "chart: $CHART_REF --version $CHART_VERSION"
 
 OVERLAYS=(
   -f "$GEN_DIR/values.install.yaml"
   -f "$GEN_DIR/$STORAGE_VALUES"
   -f "$GEN_DIR/values.self-hosted.yaml"
 )
+HELM_KUBE=(helm --kube-context "$KUBE_CONTEXT")
+
+# --- 2. every secret the run needs must be in the environment ----------------
+# Checked up front by NAME so a real run never stops halfway with some objects applied.
+# An upgrade re-sends every provider key, so a missing one would empty the running Secret;
+# hence checked under its dry-run too.
+require_secret_envs() {
+  local names=("$REGISTRY_PASSWORD_ENV") missing=() n
+  [ "$STORAGE_AUTH" = "shared_key" ] && names+=("$STORAGE_KEY_ENV")
+  [ "${GATEWAY_COVERS_RERANK:-0}" = 1 ] || names+=("$RERANK_KEY_ENV")
+  if [ "${GATEWAY_ENABLED:-0}" = 1 ]; then
+    names+=("$GATEWAY_CLIENT_ID_ENV" "$GATEWAY_CLIENT_SECRET_ENV")
+    [ -n "${GATEWAY_SUBSCRIPTION_KEY_REF:-}" ] && names+=("$GATEWAY_SUBSCRIPTION_KEY_ENV")
+  else
+    names+=("$LLM_KEY_ENV" "$EMBEDDING_KEY_ENV")
+  fi
+  for n in "${names[@]}"; do
+    [ -n "$n" ] && [ -z "${!n-}" ] && missing+=("$n")
+  done
+  [ ${#missing[@]} -eq 0 ] || die "these environment variables hold required secrets and are not set: ${missing[*]}"
+  log "all ${#names[@]} secret-holding environment variables are set"
+}
+if [ "$UPGRADE" = 1 ] || [ "$DRY_RUN" = 0 ]; then
+  require_secret_envs
+fi
 
 # --- 3. release credentials (generated JWT + session credential) -------------
 # Stable across re-runs so a re-install does not invalidate live sessions.
@@ -105,6 +139,52 @@ load_or_make_creds() {
   log "generated release credentials -> $SECRETS_ENV (0600). Keep this file safe; the session credential is the API login."
 }
 
+# Upgrade: a new JWT secret logs every user out and a new session credential changes the
+# API login, so whatever this shell holds is compared against the release and nothing is
+# minted; with no local copy at all the release's own values are recovered. Values reach
+# python on stdin, never in argv.
+load_or_recover_creds() {
+  local origin="" live mode="compare" recovered
+  if [ -n "${NEXUS_JWT_SECRET:-}" ] && [ -n "${NEXUS_SESSION_CREDENTIAL:-}" ]; then
+    origin="the environment"
+  elif [ -f "$SECRETS_ENV" ]; then
+    # shellcheck disable=SC1090
+    source "$SECRETS_ENV"
+    origin="$SECRETS_ENV"
+  else
+    mode="recover"
+  fi
+  live="$("${HELM_KUBE[@]}" get values "$RELEASE" -n "$NAMESPACE" -o json 2>/dev/null)" \
+    || die "could not read the release values (helm get values $RELEASE -n $NAMESPACE)"
+  recovered="$(printf '%s\0%s\0%s' "$live" "${NEXUS_JWT_SECRET:-}" "${NEXUS_SESSION_CREDENTIAL:-}" | python3 -c '
+import json, sys
+
+mode = sys.argv[1]
+live_json, jwt, session = sys.stdin.buffer.read().split(b"\0")
+live = json.loads(live_json or b"null") or {}
+live_jwt = str(((live.get("nexus") or {}).get("auth") or {}).get("jwtSecret") or "")
+live_session = str(((live.get("nexus") or {}).get("config") or {}).get("byocSessionCredential") or "")
+if not (live_jwt and live_session):
+    sys.exit("the release values carry no jwtSecret/byocSessionCredential to reuse; export NEXUS_JWT_SECRET and NEXUS_SESSION_CREDENTIAL to the values the release runs with")
+if mode == "recover":
+    sys.stdout.write(f"NEXUS_JWT_SECRET={live_jwt}\nNEXUS_SESSION_CREDENTIAL={live_session}\n")
+elif jwt.decode() != live_jwt or session.decode() != live_session:
+    sys.exit(3)
+' "$mode")" || {
+    rc=$?
+    [ "$rc" = 3 ] && die "the release credentials in $origin differ from the ones release '$RELEASE' runs with — an upgrade with them would rotate the login credential and invalidate every session. Remove the stale copy (or export the running values) and re-run."
+    die "could not reuse the release credentials (see above)"
+  }
+  if [ "$mode" = "recover" ]; then
+    ( umask 177; printf '%s\n' "$recovered" > "$SECRETS_ENV" )
+    # shellcheck disable=SC1090
+    source "$SECRETS_ENV"
+    log "no credentials in the environment or $SECRETS_ENV — recovered the release's own into $SECRETS_ENV (0600); nothing was rotated"
+  else
+    log "release credentials from $origin match the running release"
+  fi
+}
+
 # --- 4. build the secret values file -----------------------------------------
 # Secrets travel in a values file, not --set: helm's strvals parser silently mangles
 # any value containing , = { } or \ (`ab,cd=` truncates to `ab`) and empties "null",
@@ -121,11 +201,15 @@ secret_or_placeholder() {
 
 write_secret_values_file() {
   local jwt session rerank
+  if [ "$UPGRADE" = 1 ]; then
+    load_or_recover_creds
+  elif [ "$DRY_RUN" = 0 ]; then
+    load_or_make_creds
+  fi
   if [ "$DRY_RUN" = 1 ]; then
     jwt="dryrun-placeholder"
     session="dryrun-placeholder"
   else
-    load_or_make_creds
     jwt="$NEXUS_JWT_SECRET"
     session="$NEXUS_SESSION_CREDENTIAL"
   fi
@@ -182,47 +266,93 @@ json.dump(values, sys.stdout)
 
 write_secret_values_file
 
-# --- 5a. dry-run: lint + render (client=template, server=API validation) -----
+# --- 5. render the resolved chart and check the data plane it would run -------
+RENDER="$GEN_DIR/render.yaml"
+log "rendering $CHART_REF $CHART_VERSION"
+helm template "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
+  -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" > "$RENDER"
+python3 - "$RENDER" "$STATIC_INDEX_ID" "$EMBED_DIMENSION" "$CHART_VERSION" <<'PY' || die "the bundle cannot serve the requested static index (see above)"
+import sys
+import yaml
+
+render, want_id, want_dim, chart = sys.argv[1:5]
+env = None
+with open(render, encoding="utf-8") as f:
+    for doc in yaml.safe_load_all(f):
+        if not doc or doc.get("kind") != "Deployment" or doc["metadata"]["name"] != "docs-api":
+            continue
+        for c in doc["spec"]["template"]["spec"]["containers"]:
+            found = {e["name"]: str(e["value"]) for e in (c.get("env") or []) if "value" in e}
+            if "PINECONE_CPS__INDEX__INDEX_ID" in found:
+                env = found
+if env is None:
+    sys.exit(f"render of {chart} has no docs-api Deployment carrying an index id")
+got_id = env.get("PINECONE_CPS__INDEX__INDEX_ID")
+got_dim = env.get("PINECONE_CPS__INDEX__DIMENSION")
+if got_id != want_id or str(got_dim) != str(want_dim):
+    sys.exit(
+        f"bundle {chart} renders the data plane at index id {got_id} / dimension {got_dim}, "
+        f"but your inputs set staticIndex.id={want_id} / embedding.dimension={want_dim}. "
+        "This bundle does not carry your static index; use a bundle Pinecone confirms for it."
+    )
+print(f"render carries the requested static index: id {got_id}, dimension {got_dim}")
+PY
+log "rendered -> $RENDER ($(grep -c '^kind:' "$RENDER") objects)"
+
+render_images() {
+  grep -E '^\s*image:' "$RENDER" | sed -E 's/^\s*image:\s*//; s/^"(.*)"$/\1/' | sort -u
+}
+
+image_delta() {
+  local live changed
+  live="$(kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" get pods \
+    -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{"\n"}{end}{end}' | sort -u)"
+  changed="$(comm -23 <(render_images) <(printf '%s\n' "$live"))"
+  if [ -n "$changed" ]; then
+    log "images the upgrade rolls to (not running today):"
+    printf '%s\n' "$changed" | sed 's/^/    /' >&2
+  else
+    log "every image in the render is already running — configuration-only change"
+  fi
+}
+
+server_dry_run() {
+  # The API server can only validate namespaced objects against an existing namespace, so
+  # ensure the target namespace exists. A --dry-run=server persists nothing else.
+  kubectl --context "$KUBE_CONTEXT" create namespace "$NAMESPACE" --dry-run=client -o yaml \
+    | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null
+  "${HELM_KUBE[@]}" "$HELM_VERB" "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
+    -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" --dry-run=server > "$GEN_DIR/render.server.yaml"
+  log "server-side dry-run accepted by the cluster API ($KUBE_CONTEXT) -> $GEN_DIR/render.server.yaml"
+}
+
+# --- 6a. dry-run: lint + (server) validate; print the plan ---------------------
 if [ "$DRY_RUN" = 1 ]; then
   log "DRY RUN ($DRY_RUN_MODE) — lint + render; no secrets created. client is offline; server validates against the cluster API."
 
   # helm lint wants a chart path, not an oci:// ref, so pull the OCI chart to a temp dir.
   log "helm lint"
-  if [ "$RESOLVED_PATH" = "oci" ]; then
-    LINT_DIR="$(mktemp -d)"
-    if helm pull "$CHART_REF" "${VERSION_ARGS[@]}" --untar --untardir "$LINT_DIR" 2>/dev/null; then
-      helm lint "${DEBUG_ARGS[@]}" "$LINT_DIR/nexus-installer" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" >&2 || warn "helm lint reported issues (above)"
-    else
-      warn "could not pull the chart to lint (need 'helm registry login $REGISTRY_SERVER'?); skipping lint"
-    fi
-    rm -rf "$LINT_DIR"
+  LINT_DIR="$(mktemp -d)"
+  if helm pull "$CHART_REF" "${VERSION_ARGS[@]}" --untar --untardir "$LINT_DIR" 2>/dev/null; then
+    helm lint "${DEBUG_ARGS[@]}" "$LINT_DIR/nexus-installer" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" >&2 || warn "helm lint reported issues (above)"
   else
-    helm lint "${DEBUG_ARGS[@]}" "$CHART_REF" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" >&2 || warn "helm lint reported issues (above)"
+    warn "could not pull the chart to lint (need 'helm registry login $REGISTRY_SERVER'?); skipping lint"
   fi
+  rm -rf "$LINT_DIR"
 
-  RENDER="$GEN_DIR/render.yaml"
   if [ "$DRY_RUN_MODE" = "server" ]; then
-    need kubectl
     log "server-side dry-run — validating the manifest against the cluster API ($KUBE_CONTEXT)"
-    # The API server can only validate namespaced objects against an existing namespace, so
-    # ensure the target namespace exists. A --dry-run=server install persists nothing else.
-    kubectl --context "$KUBE_CONTEXT" create namespace "$NAMESPACE" --dry-run=client -o yaml \
-      | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null
-    helm --kube-context "$KUBE_CONTEXT" install "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
-      -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" --dry-run=server > "$RENDER"
-  else
-    helm template "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
-      -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" > "$RENDER"
+    server_dry_run
   fi
-  log "rendered -> $RENDER ($(grep -c '^kind:' "$RENDER") objects)"
   log "images referenced (each must be on your registry base '$REGISTRY_BASE'):"
-  grep -E '^\s*image:' "$RENDER" | sed 's/^/    /' | sort -u >&2
+  render_images | sed 's/^/    /' >&2
+  [ "$UPGRADE" = 1 ] && image_delta
   cat >&2 <<EOF
 
 [install] Plan (nothing was applied):
+    action    : helm $HELM_VERB
     namespace : $NAMESPACE
     release   : $RELEASE
-    path      : $RESOLVED_PATH
     chart     : $CHART_REF ${VERSION_ARGS[*]:-}
     overlays  : values.install.yaml, $STORAGE_VALUES, values.self-hosted.yaml
     secrets   : (real run) pull=$PULL_SECRET_NAME, storage=$STORAGE_EXISTING_SECRET, + provider keys via a temp values file (0600, deleted on exit)
@@ -231,18 +361,32 @@ EOF
   exit 0
 fi
 
-# --- 5b. real install: secrets then helm install -----------------------------
+# --- 6b. real run: secrets, then helm install|upgrade -------------------------
+if [ "$UPGRADE" = 1 ]; then
+  image_delta
+  server_dry_run
+fi
+
 if [ "$ASSUME_YES" != 1 ]; then
-  printf '[install] About to create secrets and install release "%s" into namespace "%s" on context "%s". Continue? [y/N] ' \
-    "$RELEASE" "$NAMESPACE" "$KUBE_CONTEXT" >&2
+  if [ "$UPGRADE" = 1 ]; then
+    printf '[install] About to upgrade release "%s" in namespace "%s" on context "%s" to bundle %s. The API is unavailable for about two minutes while the pods roll. Continue? [y/N] ' \
+      "$RELEASE" "$NAMESPACE" "$KUBE_CONTEXT" "$BUNDLE_TAG" >&2
+  else
+    printf '[install] About to create secrets and install release "%s" into namespace "%s" on context "%s". Continue? [y/N] ' \
+      "$RELEASE" "$NAMESPACE" "$KUBE_CONTEXT" >&2
+  fi
   read -r reply; [ "$reply" = "y" ] || [ "$reply" = "Y" ] || die "aborted"
 fi
 
 log "creating secrets"
 "$HERE/create-secrets.sh"
 
-log "helm install (patient foreground; do NOT Ctrl-C while it waits on the verify hook)"
-helm --kube-context "$KUBE_CONTEXT" install "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
+log "helm $HELM_VERB (patient foreground; do NOT Ctrl-C while it waits on the verify hook)"
+"${HELM_KUBE[@]}" "$HELM_VERB" "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
   -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" --timeout 10m
 
-log "install submitted. Verify: kubectl --context $KUBE_CONTEXT -n $NAMESPACE get pods"
+log "$HELM_VERB submitted. Verify: kubectl --context $KUBE_CONTEXT -n $NAMESPACE get pods"
+if [ "$UPGRADE" = 1 ]; then
+  log "confirm the rolled images: kubectl --context $KUBE_CONTEXT -n $NAMESPACE get pods -o jsonpath='{range .items[*]}{.spec.containers[*].image}{\"\\n\"}{end}' | sort -u"
+  log "then exercise the release: ./smoke-test.sh"
+fi
