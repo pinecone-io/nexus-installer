@@ -26,5 +26,4 @@ Pinecone account team before you begin.
 
 The Helm chart is published as an OCI artifact alongside the image bundle;
 `image-manifest.sh` lists what to stage in your registry and `install.sh` consumes the
-chart. A local-chart path is available for a non-default embedding dimension or a
-freshly minted index id.
+chart, for the first install and for every upgrade after it.

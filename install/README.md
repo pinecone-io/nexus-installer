@@ -24,9 +24,8 @@ touching nothing.
 | `gen-values.py` | Reads the inputs and emits the Helm overlays (`values.install.yaml`, the storage overlay `values.abs.yaml`, `values.s3.yaml`, or `values.gcs.yaml`, `values.self-hosted.yaml`) + `inputs.env`. Deterministic, secret-free. |
 | `preflight.py` | Validates the consistency invariants. Static by default (values only, no cloud); `--live` adds cluster/cloud checks. **This is the core value.** |
 | `create-secrets.sh` | Idempotently creates the namespace, the registry pull Secret, and (shared-key only) the storage-key Secret, from env-var references. Never echoes a value. |
-| `install.sh` | Orchestrates preflight → secrets → `helm install`. `--dry-run` renders the full plan without touching anything. |
+| `install.sh` | Orchestrates preflight → render check → secrets → `helm install`. `--dry-run` renders the full plan without touching anything; `--upgrade` moves an existing release to a new bundle (see "Upgrading"). |
 | `image-manifest.sh` | Prints the exact images + OCI chart the install pulls (writes `generated/manifest.txt`), which `preflight --live` then verifies. `--copy` mirrors the bundle into your registry from a source Pinecone grants you. |
-| `remint-dbslim.sh` | Local-chart helper for a non-default embedding dimension / fresh index id (see "OCI vs local-chart path"). |
 | `tf-to-inputs.sh` | Emits the storage/identity half of `customer.yaml` from the `aks-slim`, `eks-slim`, or `gke-slim` Terraform outputs (provider auto-detected). |
 | `support-bundle.sh` | Collects a redacted diagnostic archive to send to Pinecone when something goes wrong (see "Getting support"). |
 | `redact.py` | The redaction pass `support-bundle.sh` runs over everything it collects. |
@@ -59,7 +58,8 @@ Before running anything:
   `<rerankProvider>/<rerankDeployment>`: `azure_ai` (recommended) with LiteLLM's canonical
   name (e.g. `cohere-rerank-v4.0-fast`) for the current Cohere reranker, or `cohere` with
   the older `rerank-v3.5` — see `customer.example.yaml`. **The embedding model's dimension
-  fixes the index dimension and is immutable after install.**
+  fixes the index dimension and is immutable after install; so is the index id you mint
+  (`staticIndex.id`, `uuidgen` once).**
 - **Tooling:** `kubectl`, `helm`, `python3`, `openssl`; `az` for the live preflight checks.
   Install the one Python dependency (PyYAML) into a virtualenv and keep it active for the
   run (the generator, preflight, and install wrapper all use it):
@@ -150,13 +150,17 @@ When `install.sh` returns, confirm the stack is healthy and then exercise it end
 Every field in `customer.example.yaml` carries a comment naming exactly what it
 configures. The important ones:
 
+- `staticIndex.id` — the id of the one index the whole stack shares. Mint it once with
+  `uuidgen` and keep it for the life of the install: every stored document is keyed to it,
+  and upgrades carry it forward unchanged. The generated values set it both at the top level
+  and under `global.staticIndex`, the copy the data-plane services read.
 - `embedding.dimension` — the single source for `staticIndex.dimension`,
   `nexus.config.indexMetadata.dimension`, and `nexus.config.embeddingModel.dimension`.
-  It must equal the width your embedding model actually emits. `text-embedding-3-small`
-  emits 1536 natively but is a Matryoshka model: with `embedding.requestDimensions: true`
-  the proxy asks it for `dimension`-wide (1024) vectors, so the recommended model stays
-  at the chart's baked 1024 and installs over OCI with no re-mint (needs a bundle whose
-  proxy honors the dimensions request).
+  It must equal the width your embedding model actually emits, and the index bakes it at
+  creation. `text-embedding-3-small` emits 1536 natively but is a Matryoshka model: with
+  `embedding.requestDimensions: true` the proxy asks it for `dimension`-wide (1024) vectors,
+  so the recommended model stays at the chart's baked 1024 and installs over OCI with no
+  re-mint (needs a bundle whose proxy honors the dimensions request).
 - `sizing` — the stack's footprint, emitted as `global.sizing`. Only `small` is
   supported.
 - `storage.containerPrefix` — the stem the seven container names derive from.
@@ -166,9 +170,9 @@ configures. The important ones:
   chart's single `global.image.registry` knob.
 - `bundle.tag` — identifies the release. A promoted `oci-stable-<id>` (immutable) runs the
   whole stack at that one tag — you mirror a single tag per image and every pod visibly runs
-  it; the chart resolves to `0.0.0-bundle.oci-stable-<id>`. A raw build id is the chart version
-  suffix (`0.0.0-bundle.<id>`) and keeps each image on its baked tag. Use `oci-stable-latest`
-  for discovery only (it moves — don't pin an install to it).
+  it; the chart resolves to `0.0.0-bundle.oci-stable-<id>`. Use `oci-stable-latest` for
+  discovery only (it moves — don't pin an install to it). Upgrading is editing this one line
+  (see "Upgrading").
 
 Secrets never appear here. A `*Env` field names the environment variable that holds the
 secret; the tools read it from your shell and never log it.
@@ -214,8 +218,8 @@ instead of partway through the install.
 Static (values only, always safe):
 
 - **Dimension agreement** — the embedding dimension equals every place the dimension
-  appears; and if it (or the index id) differs from the bundle's baked value, it fails
-  for the OCI path with the reason and the fix (see below).
+  appears, and the generated values mirror the static index into `global.staticIndex`,
+  the copy the data-plane services read.
 - **Container prefix** — the seven containers derive from the stem.
 - **Inference catalog** — the self-hosted profile is selected, every credential ref (key,
   gateway client, subscription key) has a `providerKeys` entry, and all tier slots resolve
@@ -230,34 +234,17 @@ Live (`--live`, opt-in, needs `az`/`kubectl` + the `azure.*` inputs):
   present in your mirror at the expected tag, and (workload identity) a federated
   credential covers the release service account.
 
+Upgrade (`--upgrade`, run by `install.sh --upgrade`, needs `helm`/`kubectl` access to the
+release): the release exists and is `deployed`, `bundle.tag` is a promoted `oci-stable-<id>`,
+and the index id and dimension in your inputs equal the ones the running release was
+installed with and serves.
+
+Before anything is applied, `install.sh` also renders the resolved chart and checks that the
+data plane it would run carries your `staticIndex.id` and `embedding.dimension`; a bundle that
+renders a different index is refused.
+
 Live gateway (`--live-gateway`, opt-in, makes real HTTP calls): mints a token and makes one
 1-token chat completion plus one tiny embedding call through the gateway — see above.
-
-## OCI vs local-chart path
-
-The install defaults to the **published OCI chart** (`oci://<your-registry>/nexus-installer
---version 0.0.0-bundle.<tag>`). One known limit: the OCI chart **bakes the data-plane
-embedding dimension and the static index id** into its generated DB values at build
-time, and the OCI path cannot override them. So:
-
-- **Dimension and index id equal the bundle's baked values** → OCI path, fully automated.
-  The recommended `text-embedding-3-small` at 1024 (via `embedding.requestDimensions`,
-  above) lands here — a Matryoshka model truncating to the baked dimension keeps it on
-  the OCI path, so this is now the default rather than a fallback.
-- **A non-Matryoshka model whose native width isn't the baked dimension** (reduction can't
-  reach it), or **a freshly minted index id** → the **local-chart path**. `install.sh`
-  selects it automatically;
-  preflight tells you, and the flow is:
-
-  ```bash
-  # against the chart checkout Pinecone provides:
-  ./remint-dbslim.sh --chart-path /path/to/chart          # sets dim + id, regenerates DB values
-  ./install.sh --path local --chart-path /path/to/chart
-  ```
-
-Making the data-plane dimension a runtime value is a prerequisite for a fully
-OCI-based install at the recommended embedding model; until then the toolkit falls back
-automatically.
 
 ## Terraform hand-off (greenfield) — optional
 
@@ -330,12 +317,53 @@ locally for you to send.
   they finish, so a bundle taken afterwards will not contain their logs. If a task
   is what failed, capture `kubectl -n <namespace> logs <task-pod>` while it is alive.
 
+## Upgrading
+
+A new release is a new `bundle.tag`. Everything else in `customer.yaml` stays as it is —
+in particular `staticIndex.id` and `embedding.dimension`, which the running index is keyed
+to and which an upgrade cannot change.
+
+```bash
+$EDITOR customer.yaml                      # bundle.tag: the new oci-stable-<id> Pinecone gives you
+./image-manifest.sh --copy --source <Pinecone source registry> --chart-path /path/to/chart   # mirror the new bundle, as in Quick start step 3
+./image-manifest.sh --list                 # confirm it resolves from your registry
+./install.sh --upgrade --dry-run           # preflight + render check + server-side dry-run; applies nothing
+./install.sh --upgrade                     # same secrets in your shell as for the install
+./smoke-test.sh                            # exercise the upgraded release end to end
+```
+
+`install.sh --upgrade` re-applies the full generated values set with `helm upgrade`, so the
+provider keys must be exported in your shell exactly as for the install (it checks their
+names up front). The release credentials are the ones already in `.secrets.env`; if that
+file is gone, the script recovers them from the release and rewrites the file. It refuses
+to run when the release is not in `deployed` state, when `bundle.tag` is not a promoted
+`oci-stable-<id>`, or when the index id or dimension differ from what the running release
+serves — each with the reason printed.
+
+Expect roughly two minutes during which the API does not answer while the pods roll to the
+new images; sessions and data are unaffected. Verify the upgrade by the images the pods run,
+not by what the console shows:
+
+```bash
+kubectl --context <kubeContext> -n nexus get pods -o jsonpath='{range .items[*]}{.spec.containers[*].image}{"\n"}{end}' | sort -u
+```
+
+**Rolling back.** `helm rollback nexus <revision> -n nexus` re-applies the previous
+revision's manifest and values, including the previous `bundle.tag`, so that bundle must
+still be present in your registry. The post-install verification hooks do not run on a
+rollback, the FoundationDB pod restarts (another API outage of the same length), and the
+rollback carries no downgrade migrations: it is safe only when the newer version wrote
+nothing the older one cannot read. Check the release notes of the version you are leaving
+before relying on it.
+
+**What an upgrade cannot change:** the index id, the embedding dimension, and the release
+credentials. Any of those is a new install.
+
 ## Notes
 
-- **Install-only chart.** Never `helm upgrade` this release. To iterate: uninstall,
-  delete the PVCs, and re-run. `install.sh` persists the generated JWT + session
-  credentials to `.secrets.env` (0600) and reuses them, so re-installs keep stable
-  credentials — the session credential is your API login; keep the file safe.
+- **Re-runs keep the credentials.** `install.sh` persists the generated JWT + session
+  credentials to `.secrets.env` (0600) and reuses them, so re-installs and upgrades keep
+  stable credentials — the session credential is your API login; keep the file safe.
 - **Idempotent.** `create-secrets.sh` and the mirror are safe to re-run.
 - **Mirroring the bundle.** Staging the bundle into `registry.base` is a one-time step you
   arrange with Pinecone ahead of time — they grant your identity read on their source
