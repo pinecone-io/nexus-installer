@@ -14,13 +14,20 @@
 # install/.secrets.env on first run and reused, so re-installs keep stable creds.
 #
 # Usage:
-#   ./install.sh [--upgrade] [--dry-run[=client|server]] [-f customer.yaml] [--yes] [--debug]
+#   ./install.sh [--upgrade] [--dry-run[=client|server]] [-f customer.yaml]
+#                [--extra-values FILE] [--yes] [--debug]
+#
+# --extra-values layers one more values file after the generated overlays (and before
+# the secret file, which must stay last). It is an escape hatch for a target the inputs
+# contract does not describe -- a single-node test cluster with no cloud storage, say.
+# A customer install needs none.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 DRY_RUN=0
 DRY_RUN_MODE=""         # client = offline helm template; server = validate against the cluster API
 UPGRADE=0
+EXTRA_VALUES=""
 ASSUME_YES=0
 DEBUG=0
 
@@ -29,6 +36,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY_RUN=1 ;;
     --dry-run=*) DRY_RUN=1; DRY_RUN_MODE="${1#*=}" ;;
     --upgrade) UPGRADE=1 ;;
+    --extra-values) EXTRA_VALUES="$2"; shift ;;
     -f|--inputs) INPUTS_FILE="$2"; shift ;;
     --yes|-y) ASSUME_YES=1 ;;
     --debug) DEBUG=1 ;;
@@ -80,6 +88,11 @@ OVERLAYS=(
   -f "$GEN_DIR/$STORAGE_VALUES"
   -f "$GEN_DIR/values.self-hosted.yaml"
 )
+if [ -n "$EXTRA_VALUES" ]; then
+  [ -f "$EXTRA_VALUES" ] || die "--extra-values not a file: $EXTRA_VALUES"
+  OVERLAYS+=( -f "$EXTRA_VALUES" )
+  warn "layering --extra-values $EXTRA_VALUES over the generated overlays"
+fi
 HELM_KUBE=(helm --kube-context "$KUBE_CONTEXT")
 
 # --- 2. every secret the run needs must be in the environment ----------------
