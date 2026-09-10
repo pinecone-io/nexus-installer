@@ -53,6 +53,19 @@ LLM_KEY_REF = "llm-key"
 EMBED_KEY_REF = "embedding-key"
 RERANK_KEY_REF = "rerank-key"
 
+# The closed set the proxy's model_family accepts; anything else fails its schema.
+MODEL_FAMILIES = ("gpt5", "claude")
+
+# The two rerank providers litellm routes that sign with cloud credentials rather than an
+# API key -- bedrock via SigV4, vertex_ai via a Google access token. The proxy takes a
+# model's credential from an env-held key or an OAuth2 client, so neither can be wired.
+RERANK_PROVIDERS_WITHOUT_STATIC_KEY = ("bedrock", "vertex_ai")
+
+DEFAULT_EMBEDDING_LIMITS = {"max_input_chars": 8000, "max_batch_size": 96}
+DEFAULT_RERANK_LIMITS = {
+    "max_query_chars": 1000, "max_doc_chars": 800, "max_docs_per_request": 100,
+}
+
 # Gateway posture (inference.gateway): the chat/embedding credential is a token the
 # proxy mints per refresh window, so what install.sh injects is the long-lived OAuth2
 # client plus the gateway's static subscription key.
@@ -124,6 +137,33 @@ def dump(obj, path, header):
     print(f"wrote {path}")
 
 
+def _require_embedding_deployment(inp):
+    value = _cfg(inp, "embedding", "deployment", "inference.embeddingDeployment")
+    if not value:
+        die("missing required input `inference.embedding.deployment` "
+            "(or `inference.embeddingDeployment`)")
+    return value
+
+
+def _require_key_env(inp, block, flat):
+    value = _cfg(inp, block, "keyEnv", flat)
+    if not value:
+        die(f"missing required input `inference.{block}.keyEnv` (or `{flat}`)")
+    return value
+
+
+def _tier_key_envs(inp):
+    """{api_key_ref: env var name} for the chat tiers. A tier naming its own keyEnv gets
+    its own ref, so a catalog whose tiers sit behind different credentials still resolves."""
+    shared = _require_key_env(inp, "llm", "inference.llmKeyEnv")
+    tiers = opt(inp, "inference.llm.tiers", {}) or {}
+    out = {LLM_KEY_REF: shared}
+    for tier in ("lite", "standard", "pro"):
+        name = (tiers.get(tier) or {}).get("keyEnv", shared)
+        out[LLM_KEY_REF if name == shared else f"{LLM_KEY_REF}-{tier}"] = name
+    return out
+
+
 def build_install_values(inp, dim):
     idx_id = req(inp, "staticIndex.id")
     image = {
@@ -149,7 +189,7 @@ def build_install_values(inp, dim):
                 "host": {"name": opt(inp, "host.name", "Nexus")},
                 "indexMetadata": {"indexId": idx_id, "dimension": dim},
                 "embeddingModel": {
-                    "model": req(inp, "inference.embeddingDeployment"),
+                    "model": _require_embedding_deployment(inp),
                     "dimension": dim,
                 },
             }
@@ -290,15 +330,30 @@ def _azure_ai_rerank_url(endpoint):
 
 
 def rerank_catalog_entry(provider, deployment, endpoint):
-    # (model, base_url) for the rerank entry. The proxy validates the model id at startup
-    # (litellm.get_model_info): `cohere/` only maps rerank-v3.5, so `azure_ai/` routes a
-    # newer reranker under litellm's canonical name. See customer.example.yaml for the
-    # rerankProvider/rerankDeployment naming rules.
-    if provider == "cohere":
-        return f"cohere/{deployment}", endpoint
+    """(model, base_url) for the rerank entry; base_url None lets litellm address the
+    provider itself.
+
+    Any provider litellm routes for rerank is accepted -- the proxy asks only that the id
+    resolve to a rerank model and that the credential be one it can hold. azure_ai is the
+    single shape needing help, because litellm sends its bare base to /v1/rerank.
+    """
+    if provider in RERANK_PROVIDERS_WITHOUT_STATIC_KEY:
+        die(
+            f"inference.rerankProvider={provider!r} signs its requests with cloud "
+            "credentials rather than an API key, and a model's credential comes from an "
+            "env-held key or an OAuth2 client. Pick a provider that issues an API key."
+        )
+    model = f"{provider}/{deployment}" if provider else deployment
     if provider == "azure_ai":
-        return f"azure_ai/{deployment}", _azure_ai_rerank_url(endpoint)
-    die(f"inference.rerankProvider must be 'cohere' or 'azure_ai', got {provider!r}")
+        if not endpoint:
+            die(
+                "inference.rerankProvider=azure_ai needs inference.rerankEndpoint: the "
+                "deployment lives on a host of yours, which litellm cannot guess. Providers "
+                "that publish one endpoint for everyone (cohere, voyage, jina_ai, ...) can "
+                "leave it out."
+            )
+        return model, _azure_ai_rerank_url(endpoint)
+    return model, (endpoint or None)
 
 
 def gateway_spec(inp):
@@ -393,100 +448,204 @@ def _gateway_rerank_extras(gw):
     return extras
 
 
-def build_self_hosted_values(inp, dim):
-    endpoint = req(inp, "inference.endpoint")
-    rerank_endpoint = req(inp, "inference.rerankEndpoint")
-    chat = req(inp, "inference.chatDeployment")
-    embed = req(inp, "inference.embeddingDeployment")
-    rerank = req(inp, "inference.rerankDeployment")
-    # Fallback-when-omitted stays cohere so a pre-existing customer.yaml (rerank-v3.5, no
-    # rerankProvider) is unchanged; customer.example.yaml recommends azure_ai for new installs.
-    rerank_provider = opt(inp, "inference.rerankProvider", "cohere")
-    rerank_model, rerank_base_url = rerank_catalog_entry(rerank_provider, rerank, rerank_endpoint)
+def _limits(inp, path, defaults):
+    """Per-surface ceilings: the defaults with any camelCase override from the inputs
+    applied. Names differ between the two because the inputs are camelCase and the proxy's
+    schema is snake_case."""
+    out = dict(defaults)
+    for field in defaults:
+        camel = "".join(w if i == 0 else w.capitalize()
+                        for i, w in enumerate(field.split("_")))
+        value = opt(inp, f"{path}.{camel}", None)
+        if value is not None:
+            out[field] = int_opt(inp, f"{path}.{camel}", value)
+    return out
 
-    gw = gateway_spec(inp)
-    lowered = endpoint.lower()
-    if gw and ("/deployments/" in lowered or lowered.rstrip("/").endswith("/deployments")):
-        die(
-            f"inference.endpoint={endpoint!r} already contains /deployments/. With a "
-            "gateway configured it must be the gateway base up to but NOT including "
-            "/deployments/ — the generator appends /deployments/<deployment> itself, so "
-            f"this would produce base_url {endpoint.rstrip('/')}/deployments/{chat}, "
-            "which the gateway answers with a 404 at runtime. Trim everything from "
-            "/deployments onward."
-        )
 
-    # the proxy requires each tier to resolve to a distinct model ref
-    tier_labels = {"lite": "Chat (lite)", "standard": "Chat (standard)", "pro": "Chat (pro)"}
+def _cfg(inp, block, key, *flat, default=None):
+    """One setting for one surface: the inference.<block> form wins, then any flat key it
+    replaced, then the default. The flat keys stay live so an inputs file written against
+    the earlier single-endpoint shape keeps generating the same catalog."""
+    value = opt(inp, f"inference.{block}.{key}", None)
+    if value is not None:
+        return value
+    for path in flat:
+        value = opt(inp, path, None)
+        if value is not None:
+            return value
+    return default
+
+
+def _api_style(inp, block, gw, flat):
+    style = _cfg(inp, block, "apiStyle", flat, "inference.apiStyle",
+                 default="openai" if gw else "litellm")
+    if style not in ("litellm", "openai"):
+        die(f"inference.{block}.apiStyle must be 'litellm' or 'openai', got {style!r}")
+    return style
+
+
+def _model_family(inp, block, tier=None):
+    where = f"inference.{block}.tiers.{tier}" if tier else f"inference.{block}"
+    family = str(_cfg(inp, block, "modelFamily", "inference.modelFamily", default="") or "")
+    if tier is not None:
+        family = str(opt(inp, f"{where}.modelFamily", family) or "")
+    family = family.strip()
+    if family and family not in MODEL_FAMILIES:
+        die(f"{where}.modelFamily must be one of {sorted(MODEL_FAMILIES)}, got {family!r}; "
+            "the proxy's schema is a closed set")
+    return family
+
+
+def _surface_base_url(endpoint, deployment, gw):
+    # A gateway publishes each deployment under its own path.
     if gw:
-        # api_style openai sends the path exactly as base_url spells it. litellm's
-        # `azure/` provider would insert /openai/deployments/, which an APIM front
-        # door does not serve, and its registry would reject a deployment name it
-        # does not know.
-        extras = _gateway_model_extras(gw)
-        # api_style openai does no model-registry lookup, so the token budgets the
-        # proxy would otherwise introspect have to be stated. They are properties of
-        # the deployment behind the gateway, which only the customer knows.
-        context_window = int_opt(inp, "inference.contextWindow", 272000)
-        max_output_tokens = int_opt(inp, "inference.maxOutputTokens", 16384)
-        llm_models = {
-            f"chat-{t}": {
-                "api_style": "openai",
-                "model": chat,
-                "base_url": f"{endpoint.rstrip('/')}/deployments/{chat}",
-                "label": lbl,
-                "provider": "gateway",
-                "max_retries": 2,
-                "context_window": context_window,
-                "max_output_tokens": max_output_tokens,
-                **extras,
-            }
-            for t, lbl in tier_labels.items()
-        }
-        embed_entry = {
-            "api_style": "openai",
-            "model": embed,
-            "base_url": f"{endpoint.rstrip('/')}/deployments/{embed}",
-            "dimension": dim,
+        return f"{endpoint.rstrip('/')}/deployments/{deployment}"
+    return endpoint
+
+
+def build_self_hosted_values(inp, dim):
+    gw = gateway_spec(inp)
+
+    llm_endpoint = _cfg(inp, "llm", "endpoint", "inference.chatBaseUrl", "inference.endpoint")
+    embed_endpoint = _cfg(inp, "embedding", "endpoint", "inference.embeddingBaseUrl",
+                          "inference.endpoint")
+    if not llm_endpoint:
+        die("missing required input `inference.llm.endpoint` (or `inference.endpoint`)")
+    if not embed_endpoint:
+        die("missing required input `inference.embedding.endpoint` (or `inference.endpoint`)")
+    for name, value in (("llm", llm_endpoint), ("embedding", embed_endpoint)):
+        lowered = str(value).lower()
+        if gw and ("/deployments/" in lowered or lowered.rstrip("/").endswith("/deployments")):
+            die(
+                f"inference.{name} endpoint={value!r} already contains /deployments/. With a "
+                "gateway configured it must be the base up to but NOT including "
+                "/deployments/ — the generator appends /deployments/<deployment> itself, so "
+                "this would produce a base_url the gateway answers with a 404. Trim "
+                "everything from /deployments onward."
+            )
+
+    llm_provider = str(_cfg(inp, "llm", "provider", "inference.provider", default="azure") or "")
+    llm_style = _api_style(inp, "llm", gw, "inference.chatApiStyle")
+    llm_key_env = _cfg(inp, "llm", "keyEnv", "inference.llmKeyEnv")
+    llm_deployment = _cfg(inp, "llm", "deployment", "inference.chatDeployment")
+    if not llm_deployment:
+        die("missing required input `inference.llm.deployment` (or `inference.chatDeployment`)")
+
+    embed_provider = str(_cfg(inp, "embedding", "provider", "inference.provider",
+                              default="azure") or "")
+    embed_style = _api_style(inp, "embedding", gw, "inference.embeddingApiStyle")
+    embed_deployment = _cfg(inp, "embedding", "deployment", "inference.embeddingDeployment")
+    if not embed_deployment:
+        die("missing required input `inference.embedding.deployment` "
+            "(or `inference.embeddingDeployment`)")
+
+    rerank_provider = _cfg(inp, "rerank", "provider", "inference.rerankProvider",
+                           default="cohere")
+    rerank_deployment = _cfg(inp, "rerank", "deployment", "inference.rerankDeployment")
+    if not rerank_deployment:
+        die("missing required input `inference.rerank.deployment` "
+            "(or `inference.rerankDeployment`)")
+    rerank_endpoint = str(_cfg(inp, "rerank", "endpoint", "inference.rerankEndpoint",
+                               default="") or "").strip()
+    rerank_model, rerank_base_url = rerank_catalog_entry(
+        rerank_provider, rerank_deployment, rerank_endpoint)
+
+    embedding_limits = _limits(inp, "inference.embedding.limits",
+                               _limits(inp, "inference.embeddingLimits",
+                                       DEFAULT_EMBEDDING_LIMITS))
+    rerank_limits = _limits(inp, "inference.rerank.limits",
+                            _limits(inp, "inference.rerankLimits", DEFAULT_RERANK_LIMITS))
+
+    def model_id(provider, style, deployment):
+        if style == "openai" or not provider:
+            return deployment
+        return f"{provider}/{deployment}"
+
+    def budgets_for(style, tier=None):
+        # api_style openai skips the registry default-fill, so its budgets must be stated.
+        # Elsewhere a default would silently cap what the registry would have supplied.
+        out = {}
+        for field, key, flat, fallback in (
+            ("context_window", "contextWindow", "inference.contextWindow", 272000),
+            ("max_output_tokens", "maxOutputTokens", "inference.maxOutputTokens", 16384),
+        ):
+            value = _cfg(inp, "llm", key, flat)
+            if tier is not None:
+                value = opt(inp, f"inference.llm.tiers.{tier}.{key}", value)
+            if value is not None:
+                out[field] = int(value)
+            elif style == "openai":
+                out[field] = fallback
+        return out
+
+    tier_labels = {"lite": "Chat (lite)", "standard": "Chat (standard)", "pro": "Chat (pro)"}
+    tiers_cfg = opt(inp, "inference.llm.tiers", {}) or {}
+    unknown = sorted(set(tiers_cfg) - set(tier_labels))
+    if unknown:
+        die(f"inference.llm.tiers has unknown tier(s) {unknown}; the proxy's baseline is "
+            f"{sorted(tier_labels)}")
+    for tier, value in tiers_cfg.items():
+        if not isinstance(value, dict):
+            die(f"inference.llm.tiers.{tier} must be a mapping of the settings that tier "
+                f"overrides, e.g. {{deployment: <model>}}; got {value!r}")
+
+    auth = _gateway_model_extras(gw) if gw else {}
+    llm_models, tier_key_envs = {}, {}
+    for tier, label in tier_labels.items():
+        per_tier = tiers_cfg.get(tier) or {}
+        deployment = per_tier.get("deployment", llm_deployment)
+        provider = str(per_tier.get("provider", llm_provider) or "")
+        style = per_tier.get("apiStyle", llm_style)
+        if style not in ("litellm", "openai"):
+            die(f"inference.llm.tiers.{tier}.apiStyle must be 'litellm' or 'openai', "
+                f"got {style!r}")
+        endpoint = per_tier.get("endpoint", llm_endpoint)
+        family = _model_family(inp, "llm", tier)
+        # Each tier gets its own key ref only when it names its own env var, so the common
+        # case stays one injected key.
+        key_env = per_tier.get("keyEnv", llm_key_env)
+        key_ref = LLM_KEY_REF if key_env == llm_key_env else f"{LLM_KEY_REF}-{tier}"
+        tier_key_envs[key_ref] = key_env
+        llm_models[f"chat-{tier}"] = {
+            "api_style": style,
+            "model": model_id(provider, style, deployment),
+            "base_url": _surface_base_url(endpoint, deployment, gw),
+            **({} if gw else {"api_key_ref": key_ref}),
+            "label": per_tier.get("label", label),
+            "provider": _cfg(inp, "llm", "providerLabel", "inference.providerLabel",
+                             default="gateway" if gw else (provider or "openai-compatible")),
             "max_retries": 2,
-            "max_input_chars": 8000,
-            "max_batch_size": 96,
-            **extras,
+            **({"model_family": family} if family else {}),
+            **budgets_for(style, tier),
+            **auth,
         }
-    else:
-        llm_models = {
-            f"chat-{t}": {
-                "api_style": "litellm",
-                "model": f"azure/{chat}",
-                "base_url": endpoint,
-                "api_key_ref": LLM_KEY_REF,
-                "label": lbl,
-                "provider": "azure-openai",
-                "max_retries": 2,
-            }
-            for t, lbl in tier_labels.items()
-        }
-        embed_entry = {
-            "api_style": "litellm",
-            "model": f"azure/{embed}",
-            "base_url": endpoint,
-            "api_key_ref": EMBED_KEY_REF,
-            "dimension": dim,
-            "max_retries": 2,
-            "max_input_chars": 8000,
-            "max_batch_size": 96,
-        }
-    # Matryoshka: ask the provider for `dim`-wide vectors instead of the model's native
-    # width (needs a bundle whose proxy honors it). Defaults on for a
-    # text-embedding-3-* model so the recommended install truncates to the baked width;
-    # an explicit embedding.requestDimensions wins. Omitted when false so the values
-    # validate against an older bundle's schema.
-    req_dims = opt(inp, "embedding.requestDimensions", None)
-    if req_dims is None:
-        req_dims = embed.lower().startswith("text-embedding-3")
-    if req_dims:
+
+    embed_entry = {
+        "api_style": embed_style,
+        "model": model_id(embed_provider, embed_style, embed_deployment),
+        "base_url": _surface_base_url(embed_endpoint, embed_deployment, gw),
+        **({} if gw else {"api_key_ref": EMBED_KEY_REF}),
+        "dimension": dim,
+        "max_retries": 2,
+        **embedding_limits,
+        **auth,
+    }
+    # No default either way: off, a model that emits wider than `dimension` silently fills
+    # the index with unusable vectors; on, a model that cannot narrow fails every call. Only
+    # the operator knows which their model is, so make them say.
+    request_dimensions = _cfg(inp, "embedding", "requestDimensions",
+                              "embedding.requestDimensions")
+    if request_dimensions is None:
+        die(
+            "embedding.requestDimensions must be set explicitly (true or false). true asks "
+            "the model for `dimension`-wide vectors, for one that can narrow on request; "
+            "false takes its native width, which `dimension` must then equal. Guessing "
+            "either way risks an index full of wrong-width vectors."
+        )
+    if request_dimensions:
         embed_entry["request_dimensions"] = True
-    embedding_models = {embed: embed_entry}
+    embedding_models = {embed_deployment: embed_entry}
+
     # Gateway credential (auto-refreshed) when the gateway fronts rerank; else static key.
     rerank_gatewayed = bool(gw and gw["covers_rerank"])
     rerank_auth = _gateway_rerank_extras(gw) if rerank_gatewayed else {"api_key_ref": RERANK_KEY_REF}
@@ -494,15 +653,14 @@ def build_self_hosted_values(inp, dim):
         "rerank": {
             "api_style": "litellm",
             "model": rerank_model,
-            "base_url": rerank_base_url,
+            **({"base_url": rerank_base_url} if rerank_base_url else {}),
             **rerank_auth,
             "max_retries": 2,
-            "max_query_chars": 1000,
-            "max_doc_chars": 800,
-            "max_docs_per_request": 100,
+            **rerank_limits,
             # never set api_version on a litellm rerank model — the proxy rejects it.
         }
     }
+
     provider_keys = {}
     if not rerank_gatewayed:
         provider_keys[RERANK_KEY_REF] = ""
@@ -541,7 +699,8 @@ def build_self_hosted_values(inp, dim):
                 "stand-in gateway.\n"
             )
     else:
-        provider_keys[LLM_KEY_REF] = ""
+        for key_ref in tier_key_envs:
+            provider_keys[key_ref] = ""
         provider_keys[EMBED_KEY_REF] = ""
 
     # Without a cluster policy engine (AKS defaults to --network-policy none) the NetworkPolicy
@@ -559,7 +718,7 @@ def build_self_hosted_values(inp, dim):
                     "lite": "chat-lite",
                     "standard": "chat-standard",
                     "pro": "chat-pro",
-                    "embedding": embed,
+                    "embedding": embed_deployment,
                     "rerank": "rerank",
                 },
                 # Empty stubs; real values are injected at install (never written here).
@@ -596,8 +755,9 @@ def build_inputs_env(inp, dim, outdir):
         "PULL_SECRET_NAME": opt(inp, "registry.pullSecretName", "acr-pull"),
         "BUNDLE_TAG": str(req(inp, "bundle.tag")),
         "CHART_VERSION": f"0.0.0-bundle.{req(inp, 'bundle.tag')}",
-        "RERANK_KEY_ENV": (opt(inp, "inference.rerankKeyEnv", "") if rerank_gatewayed
-                           else req(inp, "inference.rerankKeyEnv")),
+        "RERANK_KEY_ENV": (_cfg(inp, "rerank", "keyEnv", "inference.rerankKeyEnv", default="")
+                           if rerank_gatewayed
+                           else _require_key_env(inp, "rerank", "inference.rerankKeyEnv")),
         "RERANK_KEY_REF": RERANK_KEY_REF,
         "STATIC_INDEX_ID": idx_id,
         "EMBED_DIMENSION": str(dim),
@@ -654,10 +814,14 @@ def build_inputs_env(inp, dim, outdir):
             GATEWAY_SUBSCRIPTION_KEY_REF if gw["subscription_key_env"] else ""
         )
     else:
-        env["LLM_KEY_ENV"] = req(inp, "inference.llmKeyEnv")
-        env["EMBEDDING_KEY_ENV"] = req(inp, "inference.embeddingKeyEnv")
+        env["LLM_KEY_ENV"] = _require_key_env(inp, "llm", "inference.llmKeyEnv")
+        env["EMBEDDING_KEY_ENV"] = _require_key_env(inp, "embedding",
+                                                    "inference.embeddingKeyEnv")
         env["LLM_KEY_REF"] = LLM_KEY_REF
         env["EMBED_KEY_REF"] = EMBED_KEY_REF
+        extra = " ".join(f"{ref}:{name}" for ref, name in sorted(_tier_key_envs(inp).items())
+                         if ref != LLM_KEY_REF)
+        env["EXTRA_KEY_PAIRS"] = extra
 
     path = os.path.join(outdir, "inputs.env")
     with open(path, "w", encoding="utf-8") as f:
