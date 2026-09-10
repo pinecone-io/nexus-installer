@@ -177,6 +177,19 @@ def get(d, path, default=None):
     return cur
 
 
+def inf_cfg(inp, block, key, *flat, default=None):
+    """One inference setting, resolved the way gen-values.py resolves it: the
+    inference.<block> form wins, then any flat key it replaced, then the default."""
+    value = get(inp, f"inference.{block}.{key}")
+    if value is not None:
+        return value
+    for path in flat:
+        value = get(inp, path)
+        if value is not None:
+            return value
+    return default
+
+
 def storage_provider(inp):
     return get(inp, "storage.provider", "abs")
 
@@ -364,14 +377,14 @@ def check_embedding_width(inp):
             native = (litellm_model_info(model) or {}).get("output_vector_size")
         if not isinstance(native, int) or native <= 0:
             detail = "asks the model to emit that width" if asks_for_width else "takes the model's native width"
-            ok(f"{label}: declares {declared} and {detail}; only --live-models can confirm "
-               "what the model returns")
+            ok(f"{label}: declares {declared} and {detail}; only a real call can establish "
+               "what the model returns, so run --live-models")
             continue
         if native == declared:
             ok(f"{label}: {model!r} emits {native} natively == the declared {declared}")
         elif asks_for_width:
             ok(f"{label}: {model!r} emits {native} natively and request_dimensions asks for "
-               f"{declared}; --live-models confirms the model honors it")
+               f"{declared}; run --live-models to check the model honors that")
         else:
             fail(
                 f"{label}: litellm records {model!r} as emitting {native}-wide vectors but "
@@ -409,12 +422,14 @@ def check_containers(inp):
 
 def check_inference(inp):
     section("Inference catalog / self-hosted profile")
-    endpoint = get(inp, "inference.endpoint")
-    chat = get(inp, "inference.chatDeployment")
-    embed = get(inp, "inference.embeddingDeployment")
-    rerank = get(inp, "inference.rerankDeployment")
+    endpoint = inf_cfg(inp, "llm", "endpoint", "inference.chatBaseUrl", "inference.endpoint")
+    chat = inf_cfg(inp, "llm", "deployment", "inference.chatDeployment")
+    embed = inf_cfg(inp, "embedding", "deployment", "inference.embeddingDeployment")
+    rerank = inf_cfg(inp, "rerank", "deployment", "inference.rerankDeployment")
     if not (endpoint and chat and embed and rerank):
-        fail("inference.endpoint/chatDeployment/embeddingDeployment/rerankDeployment must all be set")
+        fail("the chat endpoint and the chat / embedding / rerank deployments must all be "
+             "set (inference.llm.*, inference.embedding.*, inference.rerank.*, or the flat "
+             "inference.* keys they replaced)")
         return
 
     # Validate the ACTUAL emitted catalog when present; else reconstruct from inputs.
@@ -1009,9 +1024,9 @@ def check_live_gateway(inp):
     ttl = payload.get("expires_in", "unset")
     ok(f"minted a token (expires_in={ttl}); the proxy refreshes it in-process")
 
-    endpoint = (get(inp, "inference.endpoint") or "").rstrip("/")
-    chat = get(inp, "inference.chatDeployment")
-    embed = get(inp, "inference.embeddingDeployment")
+    endpoint = str(inf_cfg(inp, "llm", "endpoint", "inference.endpoint", default="")).rstrip("/")
+    chat = inf_cfg(inp, "llm", "deployment", "inference.chatDeployment")
+    embed = inf_cfg(inp, "embedding", "deployment", "inference.embeddingDeployment")
     query = f"?api-version={urllib.parse.quote(api_version)}"
     call_headers = {
         "Content-Type": "application/json",
@@ -1084,8 +1099,9 @@ def _check_gateway_rerank(inp, query, call_headers):
     if not get(inp, "inference.gateway.coversRerank"):
         ok("inference.gateway.coversRerank is off; rerank does not ride the gateway, nothing to probe")
         return
-    rerank_base = (get(inp, "inference.rerankEndpoint") or "").rstrip("/")
-    rerank = get(inp, "inference.rerankDeployment")
+    rerank_base = str(inf_cfg(inp, "rerank", "endpoint", "inference.rerankEndpoint",
+                          default="")).rstrip("/")
+    rerank = inf_cfg(inp, "rerank", "deployment", "inference.rerankDeployment")
     if not (rerank_base and rerank):
         fail(
             "inference.gateway.coversRerank is set but inference.rerankEndpoint / "
@@ -1194,22 +1210,26 @@ def _probe_output_budget(model, configured=None):
     return 512
 
 
-# The env var each generated api_key_ref is fed from; only customer.yaml knows the name.
-KEY_ENV_INPUTS = {
-    "llm-key": "inference.llmKeyEnv",
-    "embedding-key": "inference.embeddingKeyEnv",
-    "rerank-key": "inference.rerankKeyEnv",
-}
+# Only the inputs know the env var name -- the catalog carries the api_key_ref alone.
 SURFACE_KEY_INPUTS = {
-    "chat": "inference.llmKeyEnv",
-    "embedding": "inference.embeddingKeyEnv",
-    "rerank": "inference.rerankKeyEnv",
+    "chat": ("llm", "inference.llmKeyEnv"),
+    "embedding": ("embedding", "inference.embeddingKeyEnv"),
+    "rerank": ("rerank", "inference.rerankKeyEnv"),
 }
 
 
 def _entry_key(inp, entry, surface):
     """The provider key for one catalog entry, or "" after reporting why it is missing."""
-    path = KEY_ENV_INPUTS.get(entry.get("api_key_ref")) or SURFACE_KEY_INPUTS[surface]
+    block, flat = SURFACE_KEY_INPUTS[surface]
+    # A chat tier with its own credential is emitted as llm-key-<tier>, and its env var
+    # name lives on that tier rather than on the block.
+    ref = entry.get("api_key_ref") or ""
+    tier = ref.rsplit("-", 1)[-1] if ref.startswith("llm-key-") else ""
+    if tier and get(inp, f"inference.llm.tiers.{tier}.keyEnv"):
+        return _probe_key(inp, f"inference.llm.tiers.{tier}.keyEnv", surface)
+    path = f"inference.{block}.keyEnv"
+    if get(inp, path) is None:
+        path = flat
     return _probe_key(inp, path, surface)
 
 
