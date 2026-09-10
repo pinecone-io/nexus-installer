@@ -58,9 +58,8 @@ RERANK_KEY_REF = "rerank-key"
 MODEL_FAMILIES = ("gpt5", "claude")
 
 # The two rerank providers litellm routes that sign with cloud credentials rather than an
-# API key -- bedrock via SigV4, vertex_ai via a Google access token. A model whose
-# credential the proxy cannot hold is marked unavailable and fails startup. Any other
-# provider litellm cannot route fails on the model id instead, which the registry reports.
+# API key -- bedrock via SigV4, vertex_ai via a Google access token. The proxy takes a
+# model's credential from an env-held key or an OAuth2 client, so neither can be wired.
 RERANK_PROVIDERS_WITHOUT_STATIC_KEY = ("bedrock", "vertex_ai")
 
 DEFAULT_EMBEDDING_LIMITS = {"max_input_chars": 8000, "max_batch_size": 96}
@@ -353,9 +352,8 @@ def rerank_catalog_entry(provider, deployment, endpoint):
     if provider in RERANK_PROVIDERS_WITHOUT_STATIC_KEY:
         die(
             f"inference.rerankProvider={provider!r} signs its requests with cloud "
-            "credentials rather than an API key, and the inference proxy takes a model's "
-            "credential from an env-held key or an OAuth2 client only. Pick a provider "
-            "that issues an API key."
+            "credentials rather than an API key, and a model's credential comes from an "
+            "env-held key or an OAuth2 client. Pick a provider that issues an API key."
         )
     model = f"{provider}/{deployment}" if provider else deployment
     if provider == "azure_ai":

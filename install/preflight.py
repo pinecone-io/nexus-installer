@@ -15,7 +15,7 @@ STATIC checks (default, values-only, no cloud access):
     hand-edited overlay fails here rather than crash-looping the proxy.
   - model ids vs litellm's registry, for api_style='litellm' entries ONLY (needs litellm
     installed; SKIPs with a re-run hint when it isn't): the surface's mode matches, a chat
-    model carries the OpenAI params Nexus relies on, and its token budgets resolve — the
+    model carries the OpenAI params it requires, and its token budgets resolve — the
     questions the proxy itself puts to litellm at startup. An 'openai'-style entry is never
     looked up, because the proxy never looks it up either; its shape check above plus a
     live call are what cover it.
@@ -819,7 +819,7 @@ def _check_registry_entry(surface, cid, entry):
         supported = set(info.get("supported_openai_params") or [])
         absent = sorted({"tools", "response_format"} - supported)
         if absent:
-            fail(f"{label}: {model!r} lacks OpenAI params Nexus relies on: {absent}. "
+            fail(f"{label}: {model!r} lacks required OpenAI params: {absent}. "
                  "The proxy rejects the model at startup.")
             return
         window, window_clamped = _resolve_budget(entry.get("context_window"), info.get("max_input_tokens"))
@@ -1072,16 +1072,28 @@ def check_live_gateway(inp):
     # only for a gpt-5-family model. A probe body that differs proves nothing about it.
     # The budget must cover a reasoning model's internal tokens, which are spent
     # before any visible output and count against it.
-    budget = "max_completion_tokens" if _is_gpt5_family(chat) else "max_tokens"
+    family = inf_cfg(inp, "llm", "modelFamily", "inference.modelFamily")
+    budget = "max_completion_tokens" if _is_gpt5_family(chat, family) else "max_tokens"
     chat_url = f"{endpoint}/deployments/{chat}/chat/completions{query}"
-    payload = json.dumps(
-        {"model": chat, "messages": [{"role": "user", "content": "ping"}], budget: 512}
-    ).encode()
-    status, body = _http_post(chat_url, payload, call_headers)
+    base_body = {"model": chat, "messages": [{"role": "user", "content": "ping"}], budget: 512}
+    status, body = _http_post(chat_url, json.dumps(base_body).encode(), call_headers)
     if status == 400 and ("max_tokens" in body or "output limit" in body):
         ok(f"chat probe hit the model's output limit ({chat_url}, {budget}) — auth and routing proven")
     elif not _gateway_call_failed(chat_url, status, body):
         ok(f"chat completion through the gateway succeeded ({chat_url}, {budget})")
+
+        def call(extra):
+            probe = dict(base_body, **extra)
+            if extra.get("tools") and _is_gpt5_family(chat, family):
+                probe["reasoning_effort"] = "none"
+            code, text = _http_post(chat_url, json.dumps(probe).encode(), call_headers)
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                parsed = None
+            return code, text, parsed
+
+        _check_capabilities(f"chat {chat!r} through the gateway", call)
 
     _check_gateway_embed(inp, endpoint, embed, query, call_headers)
     _check_gateway_rerank(inp, query, call_headers)
@@ -1278,7 +1290,16 @@ def _probe_chat_entry(inp, lite, entry):
     budget = "max_completion_tokens" if _is_gpt5_family(model, entry.get("model_family")) else "max_tokens"
     kwargs[budget] = _probe_output_budget(model, entry.get("max_output_tokens"))
     status, detail, _ = _litellm_call(lite.completion, **kwargs)
-    _report_probe(f"chat {model!r}", status, detail, f" (via litellm, {budget})")
+    if not _report_probe(f"chat {model!r}", status, detail, f" (via litellm, {budget})"):
+        return
+
+    def call(extra):
+        probe = dict(kwargs, **extra)
+        if extra.get("tools") and _is_gpt5_family(model, entry.get("model_family")):
+            probe["reasoning_effort"] = "none"
+        return _litellm_call(lite.completion, **probe)
+
+    _check_capabilities(f"chat {model!r}", call)
 
 
 def _probe_embed_entry(inp, lite, entry):
@@ -1350,6 +1371,78 @@ def _openai_call(entry, key, route, body):
     return url, status, text
 
 
+# The two capabilities every chat model must have: tool calling, and structured output
+# against a json_schema. Both probes assert on the RESPONSE, not the status: litellm runs
+# with drop_params on, so a param the route rejects is discarded silently and comes back as
+# a missing tool_call -- the same answer a real request would get.
+TOOL_PROBE = [{
+    "type": "function",
+    "function": {
+        "name": "probe",
+        "description": "Echo a value back.",
+        "parameters": {"type": "object", "properties": {"value": {"type": "string"}},
+                       "required": ["value"], "additionalProperties": False},
+    },
+}]
+SCHEMA_PROBE = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "probe", "strict": True,
+        "schema": {"type": "object", "properties": {"value": {"type": "string"}},
+                   "required": ["value"], "additionalProperties": False},
+    },
+}
+
+
+def _first_message(resp):
+    """choices[0].message as a dict, from either transport's response shape."""
+    try:
+        choices = resp["choices"] if isinstance(resp, dict) else resp.choices
+        first = choices[0]
+        message = first["message"] if isinstance(first, dict) else first.message
+        return message if isinstance(message, dict) else message.model_dump()
+    except (TypeError, KeyError, IndexError, AttributeError):
+        return {}
+
+
+def _check_capabilities(label, call):
+    """Prove the two capabilities by name, so a failure says which one is missing.
+
+    `call(extra)` issues one chat completion with `extra` merged into the probe body and
+    returns (status, detail, response).
+    """
+    status, detail, resp = call({"tools": TOOL_PROBE, "tool_choice": "required"})
+    if status == 200 and _first_message(resp).get("tool_calls"):
+        ok(f"{label}: tool calling works")
+    elif status == 200:
+        fail(f"{label}: accepted tools with tool_choice=required but returned no tool_calls, "
+             "so the parameter is being ignored rather than honored.")
+    elif status in (400, 422):
+        fail(f"{label}: rejected a tools request ({detail[:150]}). Tool calling is required "
+             "of every chat model.")
+    else:
+        warn(f"{label}: could not establish tool calling: {detail[:150]}")
+
+    status, detail, resp = call({"response_format": SCHEMA_PROBE})
+    if status in (400, 422):
+        fail(f"{label}: rejected a json_schema response_format ({detail[:150]}). Structured "
+             "output is required of every chat model.")
+        return
+    if status != 200:
+        warn(f"{label}: could not establish structured output: {detail[:150]}")
+        return
+    content = _first_message(resp).get("content") or ""
+    try:
+        parsed = json.loads(content)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict) and "value" in parsed:
+        ok(f"{label}: structured output works")
+    else:
+        fail(f"{label}: accepted a json_schema response_format but answered "
+             f"{content[:60]!r}, which is not the requested schema")
+
+
 def _probe_openai_chat_entry(inp, entry):
     model = entry.get("model")
     key = _entry_key(inp, entry, "chat")
@@ -1363,7 +1456,21 @@ def _probe_openai_chat_entry(inp, entry):
         budget: min(configured, 512) if isinstance(configured, int) and configured > 0 else 512,
     }
     url, status, text = _openai_call(entry, key, "/chat/completions", body)
-    _report_probe(f"chat {model!r}", status, text, f" ({url}, {budget})")
+    if not _report_probe(f"chat {model!r}", status, text, f" ({url}, {budget})"):
+        return
+
+    def call(extra):
+        probe = dict(body, **extra)
+        if extra.get("tools") and _is_gpt5_family(model, entry.get("model_family")):
+            probe["reasoning_effort"] = "none"
+        _url, code, body_text = _openai_call(entry, key, "/chat/completions", probe)
+        try:
+            parsed = json.loads(body_text)
+        except ValueError:
+            parsed = None
+        return code, body_text, parsed
+
+    _check_capabilities(f"chat {model!r}", call)
 
 
 def _probe_openai_embed_entry(inp, entry):
@@ -1509,7 +1616,7 @@ def check_live_models(inp):
         if entry.get("credential_ref"):
             if _gateway_probed:
                 ok(f"{label}: draws its bearer from the OAuth2 credential; the gateway "
-                   "probe above is its call check")
+                   "probe above called it, capabilities included")
             else:
                 skip(f"{label}: draws its bearer from the OAuth2 credential, which only "
                      "--live-gateway mints, and no gateway probe ran")
