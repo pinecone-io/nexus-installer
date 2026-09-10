@@ -91,27 +91,86 @@ storage:
   # serviceAccount: nexus-blob@<project>.iam.gserviceaccount.com   # [YOURS] GSA every blob-accessing SA impersonates -> blob.gcs.serviceAccount
   # project: my-gcp-project              # [YOURS]  GCP project holding the buckets + GSA -> blob.gcs.project
 
-# --- Model endpoints (OpenAI-compatible: Azure OpenAI + Azure AI Foundry) -----
-# The proxy validates every model id against LiteLLM's registry at startup, so each must
-# be one LiteLLM maps: chat `gpt-5`, embedding `text-embedding-3-small`, rerank
-# `<rerankProvider>/<rerankDeployment>` (below). Keys are env-var references injected at
-# install time (never written to a file you keep).
+# --- Model endpoints ---------------------------------------------------------
+# Three surfaces, configured independently: llm (chat), embedding, rerank. Each names the
+# host, the provider that routes it, the model, and the env var holding its key — so they
+# can sit on different providers entirely. `apiStyle: litellm` addresses the model through
+# LiteLLM, which must map `<provider>/<deployment>` to a model of the right kind;
+# `apiStyle: openai` treats the host as plain OpenAI-compatible and looks nothing up.
+# `python3 preflight.py` checks the result, whichever you pick.
 inference:
-  endpoint: https://acme-aoai.cognitiveservices.azure.com        # [YOURS]   chat + embedding base_url
-  rerankEndpoint: https://acme-aoai.services.ai.azure.com/providers/cohere  # [YOURS] Foundry Cohere rerank base_url
-  chatDeployment: gpt-5                  # [YOURS]   your deployment; name must be router-recognized (e.g. gpt-5)
-  embeddingDeployment: text-embedding-3-small  # [YOURS] your deployment; recommended text-embedding-3-small
-  # rerankProvider picks the LiteLLM route; rerankDeployment must be BOTH a LiteLLM-mapped
-  # model id and your Foundry deployment name:
-  #   azure_ai [DEFAULT] model `azure_ai/<rerankDeployment>` — LiteLLM's canonical name
-  #            (cohere-rerank-v4.0-fast) runs the current Cohere reranker; base -> /v2/rerank.
-  #   cohere   alternative: model `cohere/<rerankDeployment>` — the older rerank-v3.5. A
-  #            newer name LiteLLM can't map (rerank-v4.0-fast) fails startup, so 4.x needs azure_ai.
-  rerankProvider: azure_ai               # [DEFAULT] azure_ai | cohere
-  rerankDeployment: cohere-rerank-v4.0-fast  # [YOURS] your Foundry deployment; must match rerankProvider (see above)
-  llmKeyEnv: NEXUS_LLM_KEY               # [DEFAULT] env var name holding the chat key
-  embeddingKeyEnv: NEXUS_LLM_KEY         # [DEFAULT] env var name holding the embedding key (often the same AOAI key)
-  rerankKeyEnv: NEXUS_RERANK_KEY         # [DEFAULT] env var name holding the rerank key
+  llm:
+    endpoint: https://acme-aoai.cognitiveservices.azure.com   # [YOURS] chat host
+    provider: azure                      # [DEFAULT] LiteLLM provider prefixing the model id ("" = the id needs none)
+    deployment: gpt-5                    # [YOURS]   the chat model, used by every tier not overridden below
+    keyEnv: NEXUS_LLM_KEY                # [DEFAULT] env var name holding the chat key
+    # [OPTIONAL] apiStyle: litellm | openai — defaults to openai when the gateway block
+    # below is set, litellm otherwise.
+    # [OPTIONAL] Which family's request quirks the model needs: gpt5 | claude. The proxy
+    # infers it from the model id, and most models have no family and need none — set it
+    # only when the name HIDES one (a deployment called `chat-prod` fronting a gpt-5
+    # model), or every tool-using call fails at runtime.
+    # modelFamily: gpt5
+    # [OPTIONAL] Chat token budgets. Omitted, they come from LiteLLM's registry entry for
+    # the model, and a value here can only TIGHTEN that. They become REQUIRED when the
+    # registry does not know the id — nothing fills them then and the proxy will not start
+    # — and under apiStyle: openai, which looks nothing up.
+    # contextWindow: 272000
+    # maxOutputTokens: 16384
+    # [OPTIONAL] The proxy serves three chat tiers: lite, standard and pro. Leave `tiers`
+    # out and all three run everything above — same model, host, provider and key.
+    #
+    # Name a tier to override just the settings it lists; the rest still come from the
+    # block above. Usually that is only the model:
+    # tiers:
+    #   lite:     {deployment: gpt-5-mini}
+    #   standard: {deployment: gpt-5}
+    #   pro:      {deployment: gpt-5}
+    #
+    # A tier can differ in more than the model, including its credential — one naming its
+    # own keyEnv gets its own, injected like the others:
+    # tiers:
+    #   lite:     {deployment: gpt-5-mini}
+    #   standard: {deployment: gpt-5}
+    #   pro:
+    #     provider: anthropic
+    #     deployment: claude-sonnet-4-5
+    #     endpoint: https://api.anthropic.com
+    #     keyEnv: NEXUS_PRO_KEY
+    #     modelFamily: claude
+    #     maxOutputTokens: 64000
+
+  embedding:
+    endpoint: https://acme-aoai.cognitiveservices.azure.com   # [YOURS] embedding host
+    provider: azure                      # [DEFAULT] LiteLLM provider prefixing the model id
+    deployment: text-embedding-3-small    # [YOURS]  the embedding model
+    keyEnv: NEXUS_LLM_KEY                # [YOURS] env var name holding the embedding key; reuse the chat one only if a single credential covers both
+    # [OPTIONAL] apiStyle: litellm | openai — defaults to openai when the gateway block
+    # below is set, litellm otherwise.
+    # [OPTIONAL] Per-request ceilings the proxy enforces; lower them for a tighter model.
+    # limits: {maxInputChars: 8000, maxBatchSize: 96}
+
+  rerank:
+    # Its own provider, independent of the two above. Any that issues an API key works;
+    # ones that sign with cloud credentials (bedrock, vertex_ai) are refused, because the
+    # proxy has nowhere to hold those.
+    #   azure_ai [DEFAULT] a reranker on a host of yours; NEEDS `endpoint`, whose base is
+    #            pinned to /v2/rerank (LiteLLM would send a bare base to /v1).
+    #   cohere / voyage / jina_ai / nvidia_nim / ... publish one endpoint for everyone —
+    #            leave `endpoint` out and LiteLLM addresses the provider itself.
+    #   ""       no prefix, when `deployment` is already a full LiteLLM id.
+    provider: azure_ai                   # [DEFAULT] any LiteLLM rerank provider that takes an API key
+    deployment: cohere-rerank-v4.0-fast  # [YOURS]   the rerank model under that provider
+    endpoint: https://acme-aoai.services.ai.azure.com/providers/cohere  # [OPTIONAL] required for azure_ai
+    keyEnv: NEXUS_RERANK_KEY             # [DEFAULT] env var name holding the rerank key
+    # [OPTIONAL] limits: {maxQueryChars: 1000, maxDocChars: 800, maxDocsPerRequest: 100}
+
+  # The earlier flat spelling still works and means the same thing, so an inputs file
+  # written against it keeps generating the same catalog:
+  #   inference.endpoint (chat + embedding), chatDeployment, embeddingDeployment,
+  #   rerankProvider, rerankDeployment, rerankEndpoint, provider, apiStyle, modelFamily,
+  #   contextWindow, maxOutputTokens, embeddingLimits, rerankLimits,
+  #   llmKeyEnv, embeddingKeyEnv, rerankKeyEnv
 
   # --- [OPTIONAL] Reach chat + embedding through an internal API gateway -----
   # For a provider with no static key and no public network path, where every call
@@ -145,19 +204,20 @@ inference:
   # maxOutputTokens: 16384                   # [DEFAULT] chat model max output tokens
 
 # --- Embedding dimension (THE consistency lynchpin) --------------------------
-# One value feeds global.staticIndex.dimension, nexus.config.indexMetadata.dimension, and
-# nexus.config.embeddingModel.dimension, and it must equal the width the embedding
-# model actually emits. The index bakes it at creation, so it is fixed from then on.
+# One value feeds global.staticIndex.dimension, nexus.config.indexMetadata.dimension,
+# nexus.config.embeddingModel.dimension and the catalog's embedding entry, and it must
+# equal the width the embedding model actually emits. The index bakes it at creation, so
+# it is fixed from then on.
 #
-# text-embedding-3-small emits 1536 natively, but it is a Matryoshka model: with
-# requestDimensions: true the proxy asks it for `dimension`-wide vectors instead, so a
-# smaller dimension (e.g. 1024) is valid for it.
+# Some models can narrow on request: they emit a wide vector natively but return a
+# `dimension`-wide one when asked (OpenAI's text-embedding-3-* truncate and renormalize).
+# requestDimensions turns that on, so a wider model can still hit the width you declare.
+# Leave it off for a model whose native width already equals `dimension`, or one that
+# cannot narrow — then set `dimension` to what it emits.
+# `python3 preflight.py --live-models` measures the width the model actually returns.
 embedding:
-  dimension: 1024                # [DEFAULT] must equal what the model emits (or is asked to emit; see above)
-  # [DEFAULT] Ask a Matryoshka model to emit `dimension`-wide vectors. Leave unset and the
-  # generator defaults it on for a text-embedding-3-* model; set it explicitly to
-  # force on/off (e.g. false for a model whose native width already equals dimension).
-  requestDimensions: true
+  dimension: 1024                # [YOURS] must equal what the model emits (see above)
+  requestDimensions: true        # [DEFAULT] ask the model for `dimension`-wide vectors; needs a bundle whose proxy honors it
 
 # --- Ingress (exposure — you wire the controller / DNS / TLS) ----------------
 # [OPTIONAL] Off by default: the gateway stays ClusterIP and you expose it later.

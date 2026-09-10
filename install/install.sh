@@ -229,13 +229,19 @@ write_secret_values_file() {
       pairs+=( "nexus/inference/providerKeys/$GATEWAY_SUBSCRIPTION_KEY_REF" "$subscription_key" )
     fi
   else
-    local llm embed
+    local llm embed entry ref env_name
     llm="$(secret_or_placeholder "$LLM_KEY_ENV")"
     embed="$(secret_or_placeholder "$EMBEDDING_KEY_ENV")"
     pairs+=(
       "nexus/inference/providerKeys/$LLM_KEY_REF" "$llm"
       "nexus/inference/providerKeys/$EMBED_KEY_REF" "$embed"
     )
+    # A chat tier naming its own key env gets its own ref (ref:ENV_NAME, space-separated).
+    for entry in ${EXTRA_KEY_PAIRS:-}; do
+      ref="${entry%%:*}"
+      env_name="${entry#*:}"
+      pairs+=( "nexus/inference/providerKeys/$ref" "$(secret_or_placeholder "$env_name")" )
+    done
   fi
   OUT_FILE="$(mktemp)"
   chmod 600 "$OUT_FILE"

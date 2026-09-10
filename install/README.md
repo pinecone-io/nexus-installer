@@ -52,15 +52,15 @@ Before running anything:
   does not create them). The optional `terraform/aks-slim` module provisions them for
   you; otherwise create them before install. Names derive from your stem: `<stem>-db`
   plus `<stem>-nexus-{source,knowledge,archive,traces,snapshots,library}`.
-- **Model deployments** (chat, embedding, rerank) on OpenAI-compatible endpoints. The
-  proxy looks every model id up in LiteLLM's registry at startup, so ids LiteLLM maps are
-  the safe choice — chat `gpt-5`, embedding `text-embedding-3-small`. For chat the name is
-  effectively required (see "Chat deployment naming"). Rerank is
-  `<rerankProvider>/<rerankDeployment>`: `azure_ai` (recommended) with LiteLLM's canonical
-  name (e.g. `cohere-rerank-v4.0-fast`) for the current Cohere reranker, or `cohere` with
-  the older `rerank-v3.5` — see `customer.example.yaml`. **The embedding model's dimension
-  fixes the index dimension and is immutable after install; so is the index id you mint
-  (`staticIndex.id`, `uuidgen` once).**
+- **Model deployments** — three surfaces configured independently (`inference.llm`,
+  `inference.embedding`, `inference.rerank`), so they can sit on different providers. Each
+  id is `<provider>/<deployment>` and LiteLLM must map it to a model of the right kind, so
+  ids its registry knows are the safe choice; for chat the name is effectively required
+  (see "Chat deployment naming"). The chat block can give a model per tier, each with its
+  own provider, host and key. Rerank works with any provider that issues an API key.
+  `customer.example.yaml` documents the knobs and `preflight.py` checks the result. **The
+  embedding model's dimension fixes the index dimension and is immutable after install; so is
+  the index id you mint (`staticIndex.id`, `uuidgen` once).**
 - **Tooling:** `kubectl`, `helm`, `python3`, `openssl`; `az` for the live preflight checks.
   Install the one Python dependency (PyYAML) into a virtualenv and keep it active for the
   run (the generator, preflight, and install wrapper all use it):
@@ -218,16 +218,16 @@ instead of partway through the install.
 
 ## Chat deployment naming (direct path)
 
-The catalog spells your chat model `azure/<chatDeployment>`, and the proxy asks litellm's
-registry for its token budgets. A name litellm knows (`gpt-5`, `gpt-5-mini`, `gpt-4o`) needs
-nothing. A name of your own (`gpt5-prod`) has no registry entry, so nothing fills the budgets
-and the proxy refuses to start — rename the deployment, or set `context_window` and
-`max_output_tokens` on the catalog's chat entries by hand.
+The catalog spells your chat model `<inference.llm.provider>/<deployment>`, and the proxy
+asks litellm's registry for its token budgets. A name litellm knows (`gpt-5`, `gpt-5-mini`,
+`gpt-4o`) needs nothing. A name of your own (`gpt5-prod`) has no registry entry, so nothing
+fills the budgets and the proxy refuses to start — rename the deployment, or set
+`contextWindow` and `maxOutputTokens` on the block (or on the tier).
 
 The name also decides the **model family**, which sets the request shape: a gpt-5-family
 model needs `max_completion_tokens` and `reasoning_effort` with tools. The proxy infers it
 from the model id, and most models have no family and need none — but a name that *hides*
-one (`chat-prod` fronting gpt-5) needs `model_family: gpt5` set on those entries, since
+one (`chat-prod` fronting gpt-5) needs `modelFamily: gpt5` on the block or the tier, since
 nothing can infer it.
 
 ## What preflight checks
