@@ -863,6 +863,30 @@ def _json_or_none(out):
         return None
 
 
+def _continuity_verdict(source, live_id, idx_id, live_dim, dim):
+    """PASS only on what was really compared; WARN when there was nothing to compare."""
+    if live_id in (None, "") and live_dim in (None, ""):
+        warn(f"index continuity unverified — no index id or dimension in {source}")
+        return
+    matched, empty = [], []
+    if live_id in (None, ""):
+        empty.append(f"no index id in {source}")
+    else:
+        matched.append(f"index id {idx_id}")
+    if live_dim in (None, ""):
+        empty.append(f"no dimension in {source}")
+    elif dim is None:
+        empty.append("no embedding.dimension in the inputs")
+    else:
+        matched.append(f"dimension {dim}")
+    if empty and matched:
+        warn(f"index continuity only partly verified — matched {' and '.join(matched)}; {'; '.join(empty)}")
+    elif empty:
+        warn(f"index continuity unverified — {'; '.join(empty)}")
+    else:
+        ok(f"the inputs match {source} on {' and '.join(matched)}")
+
+
 def check_upgrade(inp):
     """The live release must be one this render can safely replace: deployed, on a
     promoted bundle, and serving the same index id + dimension the inputs name."""
@@ -912,8 +936,9 @@ def check_upgrade(inp):
     if not live_values:
         warn("could not read the release values (helm get values) — skipping the installed-with comparison")
     else:
-        live_id = get(live_values, "staticIndex.id")
-        live_dim = get(live_values, "staticIndex.dimension")
+        # Older releases carry the index only in the generated global.staticIndex mirror.
+        live_id = get(live_values, "staticIndex.id") or get(live_values, "global.staticIndex.id")
+        live_dim = get(live_values, "staticIndex.dimension") or get(live_values, "global.staticIndex.dimension")
         if live_id is not None and str(live_id) != idx_id:
             fail(
                 f"staticIndex.id={idx_id} but the release was installed with {live_id}. A changed "
@@ -925,7 +950,7 @@ def check_upgrade(inp):
                 "bakes its dimension at creation; keep the dimension the release was installed with."
             )
         else:
-            ok(f"release values carry the same index id and dimension ({idx_id} / {dim})")
+            _continuity_verdict("the release values", live_id, idx_id, live_dim, dim)
 
     rc, out = run(["kubectl", "--context", ctx, "-n", NAMESPACE, "get", "deployment", "docs-api", "-o", "json"])
     deploy = _json_or_none(out) if rc == 0 else None
@@ -937,8 +962,16 @@ def check_upgrade(inp):
         for e in c.get("env") or []:
             if "value" in e:
                 env[e["name"]] = str(e["value"])
-    served_id = env.get("PINECONE_CPS__INDEX__INDEX_ID")
-    served_dim = env.get("PINECONE_CPS__INDEX__DIMENSION")
+    # Mirrors the chart's live-index guard: releases from before the CPS env rename bake the
+    # legacy PINECONE_HEADLESS__* spelling, and the baked schema outranks the DIMENSION env,
+    # which a half-finished remint can leave disagreeing with it.
+    served_id = env.get("PINECONE_CPS__INDEX__INDEX_ID") or env.get("PINECONE_HEADLESS__INDEX_ID")
+    schema = _json_or_none(env.get("PINECONE_CPS__INDEX__SCHEMA") or env.get("PINECONE_HEADLESS__SCHEMA"))
+    served_dim = (
+        get(schema or {}, "fields.embedding.dimension")
+        or env.get("PINECONE_CPS__INDEX__DIMENSION")
+        or env.get("PINECONE_HEADLESS__DIMENSION")
+    )
     if served_id and served_id != idx_id:
         fail(
             f"the running data plane serves index {served_id} but staticIndex.id={idx_id}. "
@@ -949,10 +982,8 @@ def check_upgrade(inp):
             f"the running data plane serves dimension {served_dim} but embedding.dimension={dim}. "
             "The index bakes its dimension at creation; keep the running dimension."
         )
-    elif not (served_id and served_dim):
-        warn("the running docs-api carries no index id/dimension env — cannot compare against the inputs")
     else:
-        ok(f"running data plane serves the same index id and dimension ({served_id} / {served_dim})")
+        _continuity_verdict("the running docs-api env", served_id, idx_id, served_dim, dim)
 
 
 # ----------------------------------------------------------------------------- live
