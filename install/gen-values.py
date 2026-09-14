@@ -436,7 +436,6 @@ def build_self_hosted_values(inp, dim):
                 "base_url": f"{endpoint.rstrip('/')}/deployments/{chat}",
                 "label": lbl,
                 "provider": "gateway",
-                "max_retries": 2,
                 "context_window": context_window,
                 "max_output_tokens": max_output_tokens,
                 **extras,
@@ -448,7 +447,6 @@ def build_self_hosted_values(inp, dim):
             "model": embed,
             "base_url": f"{endpoint.rstrip('/')}/deployments/{embed}",
             "dimension": dim,
-            "max_retries": 2,
             "max_input_chars": 8000,
             "max_batch_size": 96,
             **extras,
@@ -462,7 +460,6 @@ def build_self_hosted_values(inp, dim):
                 "api_key_ref": LLM_KEY_REF,
                 "label": lbl,
                 "provider": "azure-openai",
-                "max_retries": 2,
             }
             for t, lbl in tier_labels.items()
         }
@@ -472,7 +469,6 @@ def build_self_hosted_values(inp, dim):
             "base_url": endpoint,
             "api_key_ref": EMBED_KEY_REF,
             "dimension": dim,
-            "max_retries": 2,
             "max_input_chars": 8000,
             "max_batch_size": 96,
         }
@@ -496,7 +492,6 @@ def build_self_hosted_values(inp, dim):
             "model": rerank_model,
             "base_url": rerank_base_url,
             **rerank_auth,
-            "max_retries": 2,
             "max_query_chars": 1000,
             "max_doc_chars": 800,
             "max_docs_per_request": 100,
