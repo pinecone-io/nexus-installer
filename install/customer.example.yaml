@@ -47,7 +47,7 @@ registry:
 # A promoted oci-stable-<id> (immutable) runs the whole stack at that ONE tag: you mirror a
 # single tag per image and every pod runs it; the chart is 0.0.0-bundle.oci-stable-<id>.
 # oci-stable-latest is discovery-only — it moves, so don't pin an install to it.
-# To upgrade later, this is the only line you change (see README "Upgrading").
+# To upgrade, this is the only line you change (see README "Upgrading").
 bundle:
   tag: oci-stable-<id>                    # [PINECONE] promoted immutable release id (couples the stack); paste what Pinecone gives you
 
@@ -56,8 +56,7 @@ sizing: small                            # [DEFAULT] the only supported class
 
 # --- Static index ------------------------------------------------------------
 # The one index the whole stack shares. Mint the id ONCE per install (`uuidgen`) and
-# never change it afterwards: every stored document is keyed to it, and an upgrade
-# keeps it. The install refuses the example value.
+# never change it afterwards — every stored document is keyed to it.
 staticIndex:
   id: <uuidgen>                               # [YOURS]    mint once with `uuidgen`; immutable after install
   name: nexus-hybrid                          # [DEFAULT]  -> staticIndex.name
@@ -148,13 +147,11 @@ inference:
 # --- Embedding dimension (THE consistency lynchpin) --------------------------
 # One value feeds staticIndex.dimension, nexus.config.indexMetadata.dimension, and
 # nexus.config.embeddingModel.dimension, and it must equal the width the embedding
-# model actually emits. The index bakes it at creation: choose it once, an upgrade
-# keeps it.
+# model actually emits. The index bakes it at creation, so it is fixed from then on.
 #
 # text-embedding-3-small emits 1536 natively, but it is a Matryoshka model: with
-# requestDimensions: true the proxy asks it for `dimension`-wide vectors instead, so
-# a smaller dimension (e.g. 1024) is valid for it. Leave requestDimensions off for a
-# model whose native width already equals `dimension`.
+# requestDimensions: true the proxy asks it for `dimension`-wide vectors instead, so a
+# smaller dimension (e.g. 1024) is valid for it.
 embedding:
   dimension: 1024                # [DEFAULT] must equal what the model emits (or is asked to emit; see above)
   # [DEFAULT] Ask a Matryoshka model to emit `dimension`-wide vectors. Leave unset and the

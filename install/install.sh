@@ -1,22 +1,14 @@
 #!/usr/bin/env bash
-# Install wrapper — orchestrates the whole install (or upgrade) from the generated overlays:
-#
-#   preflight (static) -> render check -> secrets -> helm install|upgrade of the published
-#   OCI chart with the generated overlays plus a temp values file carrying the generated
-#   JWT + session credentials and the model provider keys.
-#
-# Before anything is applied the resolved chart is rendered and the data plane it would
-# run is checked against your inputs: the render must carry your staticIndex.id and
-# embedding.dimension, or the run stops.
+# Install wrapper — preflight -> render check -> secrets -> helm install|upgrade of the
+# published OCI chart, from the overlays gen-values.py emits.
 #
 # --dry-run runs preflight + lint + render and prints the full plan, creating no
 # secrets. =client (default) is offline (helm template); =server validates the
 # manifest against the cluster API (catches server-side rejections; needs kube access).
 #
-# --upgrade re-applies the full generated values set to the existing release with
-# `helm upgrade`, reusing (never minting) the release credentials. It refuses a raw build
-# id, a release not in `deployed` state, and any change to the index id or dimension the
-# release serves. Its dry-run is always server-side; a real upgrade runs one first.
+# --upgrade re-applies the generated values to the existing release, reusing (never
+# minting) the release credentials. Its dry-run is always server-side, and a real
+# upgrade runs one first.
 #
 # Re-runnable: the two generated release credentials are persisted (0600) to
 # install/.secrets.env on first run and reused, so re-installs keep stable creds.
@@ -89,7 +81,7 @@ OVERLAYS=(
 HELM_KUBE=(helm --kube-context "$KUBE_CONTEXT")
 
 # --- 2. every secret the run needs must be in the environment ----------------
-# Checked up front by NAME; an upgrade re-sends every provider key, so its dry-run checks too.
+# An upgrade re-sends every provider key, so its dry-run checks them too.
 require_secret_envs() {
   local names=("$REGISTRY_PASSWORD_ENV") missing=() n
   [ "$STORAGE_AUTH" = "shared_key" ] && names+=("$STORAGE_KEY_ENV")
@@ -134,8 +126,8 @@ load_or_make_creds() {
   log "generated release credentials -> $SECRETS_ENV (0600). Keep this file safe; the session credential is the API login."
 }
 
-# Upgrade: rotating either credential logs every user out, so the local copy is compared
-# against the release (recovered from it when absent) and nothing is minted.
+# Rotating either credential logs every user out, so an upgrade only ever compares the
+# local copy against the release (recovering it from there when absent), never mints.
 load_or_recover_creds() {
   local origin="" live mode="compare" recovered
   if [ -n "${NEXUS_JWT_SECRET:-}" ] && [ -n "${NEXUS_SESSION_CREDENTIAL:-}" ]; then
@@ -190,8 +182,8 @@ fi
 # all at exit 0. It must be the LAST -f of every helm call, because the generated
 # values.self-hosted.yaml declares the same providerKeys as empty stubs and -f
 # precedence is last-wins.
-# Every step before the apply (render, lint, server dry-run) gets placeholders, so no
-# real secret lands in $GEN_DIR; the real file is written only for helm install|upgrade.
+# Every step before the apply (render, lint, server dry-run) gets placeholders, so no real
+# secret reaches the render files $GEN_DIR keeps.
 PLACEHOLDER_VALUES_FILE=""
 SECRET_VALUES_FILE=""
 trap 'rm -f "${OUT_FILE:-}" "${PLACEHOLDER_VALUES_FILE:-}" "${SECRET_VALUES_FILE:-}"' EXIT
@@ -201,7 +193,6 @@ secret_or_placeholder() {
   if [ "$SECRET_MODE" = placeholder ]; then printf 'dryrun-placeholder'; else secret_from_env "$1"; fi
 }
 
-# write_secret_values_file placeholder|real -> sets OUT_FILE
 write_secret_values_file() {
   local jwt session rerank
   SECRET_MODE="$1"

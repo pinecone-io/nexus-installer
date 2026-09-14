@@ -486,9 +486,7 @@ def build_self_hosted_values(inp, dim):
             "max_batch_size": 96,
         }
     # Matryoshka: ask the provider for `dim`-wide vectors instead of the model's native
-    # width. Defaults on for a text-embedding-3-* model so a dimension below its native
-    # width is honored; an explicit embedding.requestDimensions wins. Omitted when false so the values
-    # validate against an older bundle's schema.
+    # width. Omitted when false, so the values still validate against an older bundle's schema.
     req_dims = opt(inp, "embedding.requestDimensions", None)
     if req_dims is None:
         req_dims = embed.lower().startswith("text-embedding-3")

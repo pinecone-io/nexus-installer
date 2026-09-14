@@ -196,7 +196,6 @@ def check_dimension(inp):
         gmid = get(gi, "nexus.config.indexMetadata.indexId")
         if gid != gmid:
             fail(f"index id drift in generated overlay: staticIndex.id={gid} != indexMetadata.indexId={gmid}")
-        # Only global.* reaches the data-plane subchart, so the overlay carries a mirror.
         if get(gi, "staticIndex") != get(gi, "global.staticIndex"):
             fail(
                 f"generated overlay: global.staticIndex={get(gi, 'global.staticIndex')} != "
@@ -770,10 +769,8 @@ def check_storage_gcs(inp):
         fail(f"storage.serviceAccount does not look like a GSA email: {gsa!r}")
 
 
-# Fields the customer must fill with a value only they have; leftover example text
-# here is exactly what slipped through on a real install and failed at curation. Rule 3
-# (equals-example) is scoped to these [YOURS] fields so [DEFAULT]/[PINECONE] values that
-# are meant to be kept as-is (host.name, registry.pullSecretName) never false-positive.
+# Rule 3 (equals-example) is scoped to these [YOURS] fields, so [DEFAULT]/[PINECONE]
+# values meant to be kept as-is (host.name, registry.pullSecretName) never false-positive.
 PLACEHOLDER_EXAMPLE_FIELDS = [
     "kubeContext",
     "staticIndex.id",
@@ -864,7 +861,6 @@ def _json_or_none(out):
 
 
 def _continuity_verdict(source, live_id, idx_id, live_dim, dim):
-    """PASS only on what was really compared; WARN when there was nothing to compare."""
     if live_id in (None, "") and live_dim in (None, ""):
         warn(f"index continuity unverified — no index id or dimension in {source}")
         return
@@ -888,8 +884,6 @@ def _continuity_verdict(source, live_id, idx_id, live_dim, dim):
 
 
 def check_upgrade(inp):
-    """The live release must be one this render can safely replace: deployed, on a
-    promoted bundle, and serving the same index id + dimension the inputs name."""
     section("UPGRADE: live release")
     ctx = get(inp, "kubeContext")
     rc, out, err = run3(["helm", "--kube-context", ctx, "-n", NAMESPACE, "status", RELEASE, "-o", "json"])
@@ -962,9 +956,8 @@ def check_upgrade(inp):
         for e in c.get("env") or []:
             if "value" in e:
                 env[e["name"]] = str(e["value"])
-    # Mirrors the chart's live-index guard: releases from before the CPS env rename bake the
-    # legacy PINECONE_HEADLESS__* spelling, and the baked schema outranks the DIMENSION env,
-    # which a half-finished remint can leave disagreeing with it.
+    # Releases predating the CPS env rename bake the legacy PINECONE_HEADLESS__* spelling, and
+    # the schema JSON outranks the DIMENSION env, which can disagree with it.
     served_id = env.get("PINECONE_CPS__INDEX__INDEX_ID") or env.get("PINECONE_HEADLESS__INDEX_ID")
     schema = _json_or_none(env.get("PINECONE_CPS__INDEX__SCHEMA") or env.get("PINECONE_HEADLESS__SCHEMA"))
     served_dim = (
