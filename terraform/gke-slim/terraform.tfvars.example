@@ -18,13 +18,12 @@ environment = "dev"
 release_channel = "REGULAR"
 
 # sizing: small (the default). The cluster is regional and the pool spans every zone the
-# region has, so node_count is per zone: one node per zone of the region.
+# region has, so node_count is per zone.
 node_count        = 1
 node_machine_type = "e2-standard-8"
 
-# sizing: medium — one node per zone, so three in a three-zone region, 48 vCPU / 192 GiB
-# total. The 300 GB disk is required, not optional: the DB services cache on the node disk
-# and one of them grows to 100 GiB on its own.
+# sizing: medium. The 300 GB disk is required, not optional: the DB services cache on the
+# node disk and one of them grows to 100 GiB.
 # node_count        = 1
 # node_machine_type = "n2-standard-16"
 # node_disk_size_gb = 300

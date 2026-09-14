@@ -12,12 +12,12 @@ environment = "dev"
 # Pinned to the customer's target minor; AKS selects the patch.
 kubernetes_version = "1.35"
 
-# sizing: small (the default) — 2 nodes, 16 vCPU / 64 GiB total.
+# sizing: small (the default).
 node_count   = 2
 node_vm_size = "Standard_D8s_v5"
 
-# sizing: medium — 3 nodes, 48 vCPU / 192 GiB total. The 300 GB disk is required, not
-# optional: the DB services cache on the node disk and one grows to 100 GiB on its own.
+# sizing: medium. The 300 GB disk is required, not optional: the DB services cache on the
+# node disk and one of them grows to 100 GiB.
 # node_count      = 3
 # node_vm_size    = "Standard_D16s_v5"
 # os_disk_size_gb = 300

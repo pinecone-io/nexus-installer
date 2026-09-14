@@ -14,9 +14,8 @@ STATIC checks (default, values-only, no cloud access except the node read below)
   - image registry override set; pull-secret server is a prefix of the registry base.
   - workload_identity: clientId set. shared_key: existingSecret set.
   - security: WARN when the NetworkPolicy enforcement check is turned off.
-  - sizing: a supported size class, on object storage, with enough allocatable node CPU,
-    memory and ephemeral-storage for it. The capacity part reads the cluster's nodes when
-    the kube context answers and SKIPs when it does not; everything else is values-only.
+  - sizing: a supported size class, on object storage, and the node capacity it needs.
+    The capacity part reads the cluster's nodes, and SKIPs when the context does not answer.
   - no leftover example/placeholder values (an `acme` token, an unfilled <...>, or a
     [YOURS] field still equal to customer.example.yaml).
 
@@ -91,16 +90,10 @@ BLOB_SERVICE_ACCOUNTS = [
     "query-executors-slab-sa", "request-log-writers-sa",
 ]
 
+# The size-class constants below are duplicated from gen-values.py, not imported, so that
+# either script runs alone; they have to change together.
 SIZING_CLASSES = ("small", "medium")
-
-# The DB tier's resource profile the size class selects, per service alias. It is picked
-# by the cell block of that service's config_overrides — keyed by the chart's cell_name
-# with dashes as underscores, and outranking every other scope. SIZING_CLASSES,
-# DBSLIM_CELL_KEY, DBSLIM_PROFILES, DBSLIM_SERVICES and the object-storage message below
-# all mirror gen-values.py, which each script carries on its own so either runs alone.
 DBSLIM_CELL_KEY = "gate1_kind"
-# The chart's profile name per size class. small is absent: it ships as the chart default,
-# so it needs no overlay.
 DBSLIM_PROFILES = {"medium": "self_hosted_medium"}
 DBSLIM_SERVICES = (
     "docs-api",
@@ -737,15 +730,10 @@ def check_security(inp):
              "is skipped; ensure nexus-api is isolated at a lower layer")
 
 
-# What each class commits, from the sizing budget: every steady pod's requests plus the
-# task-pod slots at the class's concurrency cap. The memory figures carry a surplus over
-# the pod requests alone (19.1 vs 17.6 GiB for small, 82.0 vs 73.8 for medium): task pods
-# burst above their requests, and the class stays usable when they do.
-#
-# The ephemeral figures are disk headroom, not ceilings the services are held to — only
-# index-builder declares a storage ceiling; the rest cache on the node disk and grow
-# freely, so a smaller disk means eviction under load rather than a scheduling error. The
-# largest single service's headroom has to fit on one node, which no node count fixes.
+# Hand-summed from the chart's pod requests plus the task-pod slots at each class's
+# concurrency cap, so they must be re-summed when the chart's resources move. The ephemeral
+# figures are headroom rather than declared requests: most DB services cache on the node
+# disk without a ceiling, so a short disk evicts under load instead of failing to schedule.
 SIZING_NEEDS = {
     "small": {
         "cpu": 8.1,
@@ -782,10 +770,8 @@ def parse_quantity(q):
         return None
 
 
-# Taints Kubernetes applies itself while a node is unhealthy, unreachable or draining. What
-# such a node will contribute once it settles is unknown, so the check reports that it could
-# not measure — rather than counting the node out and failing a cluster that is only
-# momentarily short of one.
+# Kubernetes applies these itself while a node is settling, so a node carrying one is
+# reported as unmeasurable rather than counted out of a cluster that is only briefly short.
 TRANSIENT_TAINT_KEYS = (
     "node.kubernetes.io/not-ready",
     "node.kubernetes.io/unreachable",
@@ -796,17 +782,14 @@ TRANSIENT_TAINT_KEYS = (
     "node.kubernetes.io/unschedulable",
 )
 
-# Which terraform module in this repo documents the node shape, by object-storage provider.
 TF_MODULE_BY_PROVIDER = {"abs": "aks", "s3": "eks", "gcs": "gke"}
 
 
 def schedulable_allocatable(nodes):
     """Sum allocatable cpu/memory/ephemeral-storage over the nodes an ordinary pod can land
-    on: amd64, uncordoned, and carrying no NoSchedule/NoExecute taint. Architecture is read
-    from the kubernetes.io/arch label only — a node without that label counts as amd64.
+    on. A node with no kubernetes.io/arch label counts as amd64.
 
-    Returns (totals, per-node ephemeral GiB, how many nodes were left out on purpose, and
-    the nodes whose contribution cannot be measured at all)."""
+    Returns (totals, per-node ephemeral GiB, count excluded on purpose, nodes unmeasurable)."""
     totals = {"cpu": 0.0, "memory_gib": 0.0, "ephemeral_gib": 0.0}
     per_node = []
     excluded = 0
@@ -846,7 +829,6 @@ def schedulable_allocatable(nodes):
 
 
 def sizing_reference(inp):
-    """Where the node shape for each size class is written down."""
     cloud = TF_MODULE_BY_PROVIDER.get(storage_provider(inp), "<cloud>")
     return f"terraform/{cloud}-slim README, Sizing"
 
@@ -923,10 +905,8 @@ def check_sizing(inp):
         if emitted != s:
             fail(f"generated values.install.yaml has global.sizing={emitted!r}, "
                  f"customer.yaml has {s!r} — regenerate with gen-values.py")
-        # Reads the emitted overlay against the cell key this script carries, so it catches
-        # a stale generated/ or a hand edit. It cannot catch the chart renaming its
-        # cell_name: the overlay would then land under a key nothing reads and every
-        # service would quietly run the chart's default profile.
+        # Blind to the chart renaming its cell_name: the overlay would then land under a key
+        # nothing reads, and every service would quietly run the chart's default profile.
         want = DBSLIM_PROFILES.get(s)
         drift = {
             svc: get(gi, f"db-slim.{svc}.pinecone.config_overrides.{DBSLIM_CELL_KEY}.profile")

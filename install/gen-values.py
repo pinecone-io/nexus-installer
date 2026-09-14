@@ -65,12 +65,10 @@ DEFAULT_SUBSCRIPTION_HEADER = "Ocp-Apim-Subscription-Key"
 
 SIZING_CLASSES = ("small", "medium")
 
-# The DB tier's resource profile the size class selects, per service alias. It is picked
-# by the cell block of that service's config_overrides — keyed by the chart's cell_name
-# with dashes as underscores, and outranking every other scope.
+# The chart's cell_name with dashes as underscores. A config_overrides cell block outranks
+# every other scope, which is why the profile is set there.
 DBSLIM_CELL_KEY = "gate1_kind"
-# The chart's profile name per size class. small is absent: it ships as the chart default,
-# so it needs no overlay.
+# small is absent on purpose: its profile ships as the chart default and needs no overlay.
 DBSLIM_PROFILES = {"medium": "self_hosted_medium"}
 DBSLIM_SERVICES = (
     "docs-api",
@@ -125,7 +123,7 @@ def sizing(inp):
     if s not in SIZING_CLASSES:
         die(f"sizing={s!r} is not a supported size class. "
             f"Supported: {', '.join(SIZING_CLASSES)}")
-    # The provider enum first, so an unsupported provider reports that, not the size class.
+    # Validate the provider first, so an unsupported one reports that, not the size class.
     provider = storage_provider(inp)
     if s != "small" and provider == "local":
         die(f"sizing={s!r} requires object storage; storage.provider=local runs at "
@@ -134,8 +132,6 @@ def sizing(inp):
 
 
 def dbslim_profile_overlay(size):
-    """Point every DB service at the resource profile the size class selects; small ships
-    as the chart default and needs no overlay."""
     profile = DBSLIM_PROFILES.get(size)
     if not profile:
         return None

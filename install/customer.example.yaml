@@ -59,13 +59,10 @@ bundle:
   bakedIndexId: 8fe737ee-67aa-47c4-b7b2-ed5ac39c552e  # [PINECONE] shipped with the bundle; don't change
 
 # --- Sizing ------------------------------------------------------------------
-# One knob for the whole stack's footprint; becomes the chart's global.sizing.
-#   small   evaluation and light use: one replica of each service, on at least two
-#           8-vCPU / 32-GiB nodes.
-#   medium  production: two replicas of every request-path service and larger per-service
-#           resources, on at least three 16-vCPU / 64-GiB nodes with 300 GB disks, and
-#           object storage.
-# Preflight measures the cluster's nodes and fails if the class you pick does not fit.
+#   small   one replica of each service; at least two 8-vCPU / 32-GiB nodes.
+#   medium  two replicas of every request-path service, larger per-service resources; at
+#           least three 16-vCPU / 64-GiB nodes with 300 GB disks, and object storage.
+# Preflight measures the cluster and fails if the class you pick does not fit.
 sizing: small                            # [DEFAULT] small | medium
 
 # --- Static index ------------------------------------------------------------
