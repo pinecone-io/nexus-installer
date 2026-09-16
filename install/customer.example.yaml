@@ -58,6 +58,9 @@ bundle:
   bakedDimension: 1024                              # [PINECONE] shipped with the bundle; don't change
   bakedIndexId: 8fe737ee-67aa-47c4-b7b2-ed5ac39c552e  # [PINECONE] shipped with the bundle; don't change
 
+# --- Sizing ------------------------------------------------------------------
+sizing: small                            # [DEFAULT] the only supported class
+
 # --- Static index ------------------------------------------------------------
 # The one index the whole stack shares. Re-minting the id after data is ingested
 # orphans it, so choose once. MINT A FRESH uuid per install (`uuidgen`) UNLESS you

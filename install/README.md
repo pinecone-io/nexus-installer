@@ -157,6 +157,8 @@ configures. The important ones:
   the proxy asks it for `dimension`-wide (1024) vectors, so the recommended model stays
   at the chart's baked 1024 and installs over OCI with no re-mint (needs a bundle whose
   proxy honors the dimensions request).
+- `sizing` — the stack's footprint, emitted as `global.sizing`. Only `small` is
+  supported.
 - `storage.containerPrefix` — the stem the seven container names derive from.
 - `storage.auth` — `shared_key` (an account-key Secret) or `workload_identity` (keyless;
   needs `clientId`, the user-assigned managed identity).
