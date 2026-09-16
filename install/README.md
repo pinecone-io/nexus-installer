@@ -152,9 +152,9 @@ configures. The important ones:
 
 - `staticIndex.id` — the id of the one index the whole stack shares. Mint it once with
   `uuidgen` and keep it for the life of the install: every stored document is keyed to it,
-  and upgrades carry it forward unchanged. The generated values set it both at the top level
-  and under `global.staticIndex`, the copy the data-plane services read.
-- `embedding.dimension` — the single source for `staticIndex.dimension`,
+  and upgrades carry it forward unchanged. The generated values emit it under
+  `global.staticIndex`, the single copy the data-plane services read.
+- `embedding.dimension` — the single source for `global.staticIndex.dimension`,
   `nexus.config.indexMetadata.dimension`, and `nexus.config.embeddingModel.dimension`.
   It must equal the width your embedding model actually emits, and the index bakes it at
   creation. `text-embedding-3-small` emits 1536 natively but is a Matryoshka model: with
@@ -218,8 +218,8 @@ instead of partway through the install.
 Static (values only, always safe):
 
 - **Dimension agreement** — the embedding dimension equals every place the dimension
-  appears, and the generated values mirror the static index into `global.staticIndex`,
-  the copy the data-plane services read.
+  appears, and the generated `global.staticIndex` — the copy the data-plane services
+  read — matches the static index in your inputs.
 - **Container prefix** — the seven containers derive from the stem.
 - **Inference catalog** — the self-hosted profile is selected, every credential ref (key,
   gateway client, subscription key) has a `providerKeys` entry, and all tier slots resolve

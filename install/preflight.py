@@ -3,9 +3,9 @@
 install with a clear message, instead of at pod boot or first ingest.
 
 STATIC checks (default, values-only, no cloud access):
-  - dimension agreement: embedding.dimension == staticIndex.dimension ==
-    indexMetadata.dimension == embeddingModel.dimension, and the generated overlay
-    mirrors staticIndex into global.staticIndex (the copy the data plane reads).
+  - dimension agreement: embedding.dimension == global.staticIndex.dimension ==
+    indexMetadata.dimension == embeddingModel.dimension, and the generated overlay's
+    global.staticIndex (the copy the data plane reads) matches the customer inputs.
   - container prefix: the seven containers derive from the stem.
   - self-hosted profile selected; every catalog api_key_ref has a providerKeys entry;
     all three chat tier slots (lite/standard/pro) + embedding + rerank resolve to a
@@ -209,13 +209,13 @@ def check_dimension(inp):
     if dim is None:
         fail("embedding.dimension is not set")
         return
-    ok(f"embedding.dimension = {dim} (feeds staticIndex, indexMetadata, embeddingModel)")
+    ok(f"embedding.dimension = {dim} (feeds global.staticIndex, indexMetadata, embeddingModel)")
 
     # Cross-check the emitted overlay: the three dimension sites must all equal `dim`.
     gi = load_gen("values.install.yaml")
     if gi:
         sites = {
-            "staticIndex.dimension": get(gi, "staticIndex.dimension"),
+            "global.staticIndex.dimension": get(gi, "global.staticIndex.dimension"),
             "nexus.config.indexMetadata.dimension": get(gi, "nexus.config.indexMetadata.dimension"),
             "nexus.config.embeddingModel.dimension": get(gi, "nexus.config.embeddingModel.dimension"),
         }
@@ -224,18 +224,18 @@ def check_dimension(inp):
             fail(f"dimension drift in generated values.install.yaml vs embedding.dimension={dim}: {bad}")
         else:
             ok(f"generated overlay: all dimension sites == {dim}")
-        gid = get(gi, "staticIndex.id")
+        gid = get(gi, "global.staticIndex.id")
         gmid = get(gi, "nexus.config.indexMetadata.indexId")
         if gid != gmid:
-            fail(f"index id drift in generated overlay: staticIndex.id={gid} != indexMetadata.indexId={gmid}")
-        if get(gi, "staticIndex") != get(gi, "global.staticIndex"):
+            fail(f"index id drift in generated overlay: global.staticIndex.id={gid} != indexMetadata.indexId={gmid}")
+        want_id = get(inp, "staticIndex.id")
+        if gid != want_id:
             fail(
-                f"generated overlay: global.staticIndex={get(gi, 'global.staticIndex')} != "
-                f"staticIndex={get(gi, 'staticIndex')} — the data plane renders its index from "
-                "global.staticIndex; regenerate with gen-values.py"
+                f"generated overlay: global.staticIndex.id={gid} != staticIndex.id={want_id} from your "
+                "inputs — the data plane renders its index from global.staticIndex; regenerate with gen-values.py"
             )
         else:
-            ok("generated overlay: global.staticIndex mirrors staticIndex")
+            ok("generated overlay: global.staticIndex matches your inputs")
 
 
 # Native output widths of common embedding models, keyed by a substring of the
@@ -955,7 +955,7 @@ def check_upgrade(inp):
     if not live_values:
         warn("could not read the release values (helm get values) — skipping the installed-with comparison")
     else:
-        # Older releases carry the index only in the generated global.staticIndex mirror.
+        # Releases from earlier bundles carry a top-level copy; current bundles emit only global.
         live_id = get(live_values, "staticIndex.id") or get(live_values, "global.staticIndex.id")
         live_dim = get(live_values, "staticIndex.dimension") or get(live_values, "global.staticIndex.dimension")
         if live_id is not None and str(live_id) != idx_id:

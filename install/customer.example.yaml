@@ -59,7 +59,7 @@ sizing: small                            # [DEFAULT] the only supported class
 # never change it afterwards — every stored document is keyed to it.
 staticIndex:
   id: <uuidgen>                               # [YOURS]    mint once with `uuidgen`; immutable after install
-  name: nexus-hybrid                          # [DEFAULT]  -> staticIndex.name
+  name: nexus-hybrid                          # [DEFAULT]  -> global.staticIndex.name
   # dimension is taken from embedding.dimension below (one source of truth).
 
 # --- Object storage ----------------------------------------------------------
@@ -145,7 +145,7 @@ inference:
   # maxOutputTokens: 16384                   # [DEFAULT] chat model max output tokens
 
 # --- Embedding dimension (THE consistency lynchpin) --------------------------
-# One value feeds staticIndex.dimension, nexus.config.indexMetadata.dimension, and
+# One value feeds global.staticIndex.dimension, nexus.config.indexMetadata.dimension, and
 # nexus.config.embeddingModel.dimension, and it must equal the width the embedding
 # model actually emits. The index bakes it at creation, so it is fixed from then on.
 #
