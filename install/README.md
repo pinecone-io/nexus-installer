@@ -301,6 +301,7 @@ support channel. `support-bundle.sh` produces one:
 ./support-bundle.sh                 # writes ./nexus-support-<timestamp>.tgz
 ./support-bundle.sh --since 72h     # widen the log window for an older incident
 ./support-bundle.sh --exec          # add the version probe and `fdbcli status`
+./support-bundle.sh --version-only  # print just the version block; no archive
 ```
 
 It collects cluster and node facts, the namespaced objects the stack uses, pod logs
@@ -311,6 +312,11 @@ locally for you to send.
 - **Read-only by default.** Only `get`/`describe`/`logs`. `--exec` is the one flag that
   needs `create` on a pod subresource, and it covers both collectors that do: the
   gateway version probe (`pods/portforward`) and `fdbcli status` (`pods/exec`).
+- **Which build is this?** `SUMMARY.txt` answers it in one block: the installed chart
+  and its appVersion, the release status, the tag you pinned in `bundle.tag`, the api
+  image the release asks for, and — with `--exec` — what `/api/v0/version` reports.
+  `--version-only` prints that block on its own when you need the answer and not the
+  archive; it collects nothing else, and what it prints goes through `redact.py` too.
 - **Secrets.** Secret values, the chart's `providerKeys` block, and credential-shaped
   values everywhere else are replaced with `[REDACTED]` by `redact.py`; key *names*
   are kept, since they are what makes a bundle diagnosable. `.secrets.env` is never
