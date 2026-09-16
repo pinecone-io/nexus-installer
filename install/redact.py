@@ -68,6 +68,15 @@ BLOCK_SCALAR = re.compile(r"^[|>](?:[1-9][-+]?|[-+][1-9]?)?(?:[ \t]+#.*)?$")
 # other layer; it only duplicates the live spec we already collect, so drop it wholesale.
 OPAQUE_DUMP_KEY = re.compile(r"(?i)(?:^|[./])last-applied-configuration$")
 
+# Matched whole, never by suffix, so a key that merely ends in one of these is not
+# exempted along with it — `secretGitSha` must still lose its value.
+COMMIT_KEYS = frozenset({"gitsha", "nexusgitsha"})
+
+# The version probe answers in one line of compact JSON, where the assignment layer sees
+# no key to exempt, so that one commit is held out of long-hex-string by its exact shape:
+# both quotes are required, which is the left and right boundary the key layer would give.
+VERSION_HEX = re.compile(r"(\"git_sha\"\s*:\s*\")([0-9a-f]{40}\")")
+
 QUOTE = r"[\"']?"
 PATTERNS = [
     (
@@ -145,6 +154,10 @@ def _is_sensitive_key(key):
     return _normalize(key).endswith(SENSITIVE_SUFFIXES)
 
 
+def _is_commit_key(key):
+    return _normalize(key) in COMMIT_KEYS
+
+
 def _is_reference_key(key):
     normalized = _normalize(key)
     return (
@@ -168,7 +181,7 @@ def _count(counts, name, hits=1):
     counts[name] = counts.get(name, 0) + hits
 
 
-def _apply_patterns(line, counts, skip=()):
+def _scan(line, counts, skip):
     for name, pattern, replacement in PATTERNS:
         if name in skip:
             continue
@@ -176,6 +189,15 @@ def _apply_patterns(line, counts, skip=()):
         if hits:
             _count(counts, name, hits)
     return line
+
+
+# re.split keeps VERSION_HEX's two groups, so every third part is unmatched text and the
+# commit sitting between them is never offered to a pattern.
+def _apply_patterns(line, counts, skip=()):
+    parts = VERSION_HEX.split(line)
+    for index in range(0, len(parts), 3):
+        parts[index] = _scan(parts[index], counts, skip)
+    return "".join(parts)
 
 
 def _redact_assignment(match, counts, label):
@@ -194,7 +216,7 @@ def redact_line(line, counts):
         key, value = match.group(2), match.group(4)
         if OPAQUE_DUMP_KEY.search(key):
             return _redact_assignment(match, counts, "opaque-dump") or line
-        if _is_reference_key(key) or REFERENCE_VALUE.match(value):
+        if _is_reference_key(key) or _is_commit_key(key) or REFERENCE_VALUE.match(value):
             return _apply_patterns(line, counts, skip=("long-hex-string",))
         if _is_sensitive_key(key) and not (" " in key and " " in value):
             return _redact_assignment(match, counts, "sensitive-assignment") or line
@@ -239,6 +261,7 @@ def _redact_document(lines, kind, counts):
     block = None
     scalar_body = None
     sensitive_env_name = False
+    commit_env_name = False
 
     for line in lines:
         indent = _indent_of(line)
@@ -257,6 +280,8 @@ def _redact_document(lines, kind, counts):
             emitted = _redact_assignment(assignment, counts, block[1]) or line
         elif sensitive_env_name and assignment and assignment.group(2) == "value":
             emitted = _redact_assignment(assignment, counts, "env-literal") or line
+        elif commit_env_name and assignment and assignment.group(2) == "value":
+            emitted = _apply_patterns(line, counts, skip=("long-hex-string",))
         else:
             emitted = redact_line(line, counts)
         redacted.append(emitted)
@@ -271,6 +296,7 @@ def _redact_document(lines, kind, counts):
 
         env_name = ENV_NAME.match(line)
         sensitive_env_name = bool(env_name) and _is_sensitive_key(env_name.group(1))
+        commit_env_name = bool(env_name) and _is_commit_key(env_name.group(1))
 
     return redacted
 
@@ -345,6 +371,9 @@ SELF_TEST_REDACTED = [
     "  connectionStringName: AccountKey=realkey123;",
     'msg="auth failed" client_secret=AbC123RealClientSecret',
     "  client-secret: RealAzureAppSecretValue",
+    '{"secret_revision":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}',
+    '{"client_secret_revision":"5f4dcc3b5aa765d61d8327deb882cf99"}',
+    "  secretGitSha: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 ]
 
 SELF_TEST_KEPT = [
@@ -358,6 +387,8 @@ SELF_TEST_KEPT = [
     "image: reg.example.com/nexus_api@sha256:"
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "  gitCommit: 1ad6e68c4d5c2b8f3a9e7d6c5b4a39281f0e7d6c",
+    "  git sha           : 1ad6e68c4d5c2b8f3a9e7d6c5b4a39281f0e7d6c",
+    "  gitSha: 1ad6e68c4d5c2b8f3a9e7d6c5b4a39281f0e7d6c",
     "        checksum/byoc-config: 3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b",
     "  Machine ID:                 8ee1c6a2f0b34d5e9a7c1b2d3e4f5a6b",
     "  trace_id: 4bf92f3577b34da6a3ce929d0e0e4736",
@@ -427,7 +458,18 @@ ENV_YAML = """        - name: PINECONE_PINECONE__API_KEY
           value: pcsk_live_value
         - name: PINECONE_SERVER__PORT
           value: "9000"
+        - name: NEXUS_GIT_SHA
+          value: 1ad6e68c4d5c2b8f3a9e7d6c5b4a39281f0e7d6c
+        - name: NEXUS_SECRET_GIT_SHA
+          value: a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4
 """
+
+VERSION_PROBE_LINE = (
+    '{"version":"0.1.0","api":"v0","build":{"git_sha":"1ad6e68c4d5c2b8f3a9e7d6c5b4a39281f0e7d6c",'
+    '"image_tag":"branch-abc1234","bundle_version":"0.0.0-bundle.branch-abc1234"},'
+    '"token":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",'
+    '"session":"5f4dcc3b5aa765d61d8327deb882cf99"}'
+)
 
 JSON_DOCUMENT = """{
     "cluster": {
@@ -502,6 +544,14 @@ def self_test():
     _check(failures, "pcsk_live_value" not in env, "literal env secret was not redacted")
     _check(failures, counts.get("env-literal") == 1, "env literal was not counted")
     _check(failures, '"9000"' in env, "non-sensitive env value was redacted")
+    _check(failures, "1ad6e68c4d5c2b8f3a9e7d6c5b4a39281f0e7d6c" in env, "commit env value was redacted")
+    _check(failures, "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4" not in env, "sensitive commit env survived")
+
+    probe = redact_line(VERSION_PROBE_LINE, {})
+    _check(failures, "1ad6e68c4d5c2b8f3a9e7d6c5b4a39281f0e7d6c" in probe, "probe commit was redacted")
+    _check(failures, "0.0.0-bundle.branch-abc1234" in probe, "probe bundle version was redacted")
+    _check(failures, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" not in probe, "probe token survived")
+    _check(failures, "5f4dcc3b5aa765d61d8327deb882cf99" not in probe, "hex beside the commit survived")
 
     counts = {}
     block_applied = redact_text(LAST_APPLIED_BLOCK_YAML, counts)
