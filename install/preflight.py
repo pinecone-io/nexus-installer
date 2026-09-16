@@ -155,6 +155,38 @@ def storage_provider(inp):
     return get(inp, "storage.provider", "abs")
 
 
+def _json_or_none(out):
+    try:
+        return json.loads(out) if out else None
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+def deployment_env(deploy):
+    """The literal (non-valueFrom) env of every container in a Deployment."""
+    env = {}
+    for c in get(deploy, "spec.template.spec.containers", []) or []:
+        for e in c.get("env") or []:
+            if "value" in e:
+                env[e["name"]] = str(e["value"])
+    return env
+
+
+def index_identity(env):
+    """The index id and dimension a data plane with this env actually serves. The baked
+    schema outranks the DIMENSION env, which a half-finished remint can leave disagreeing
+    with it, and releases predating the CPS rename carry the legacy PINECONE_HEADLESS__*
+    spelling. Returns (id, dimension), either of which may be None."""
+    idx_id = env.get("PINECONE_CPS__INDEX__INDEX_ID") or env.get("PINECONE_HEADLESS__INDEX_ID")
+    schema = _json_or_none(env.get("PINECONE_CPS__INDEX__SCHEMA") or env.get("PINECONE_HEADLESS__SCHEMA"))
+    dim = (
+        get(schema or {}, "fields.embedding.dimension")
+        or env.get("PINECONE_CPS__INDEX__DIMENSION")
+        or env.get("PINECONE_HEADLESS__DIMENSION")
+    )
+    return idx_id, dim
+
+
 def run3(cmd):
     """Run a command, returning (rc, stdout, stderr). Never raises."""
     try:
@@ -853,13 +885,6 @@ def _helm(ctx, *args):
     return run(["helm", "--kube-context", ctx, "-n", NAMESPACE, *args])
 
 
-def _json_or_none(out):
-    try:
-        return json.loads(out) if out else None
-    except json.JSONDecodeError:
-        return None
-
-
 def _continuity_verdict(source, live_id, idx_id, live_dim, dim):
     if live_id in (None, "") and live_dim in (None, ""):
         warn(f"index continuity unverified — no index id or dimension in {source}")
@@ -951,20 +976,7 @@ def check_upgrade(inp):
     if not deploy:
         warn("could not read the running docs-api Deployment — skipping the live data-plane comparison")
         return
-    env = {}
-    for c in get(deploy, "spec.template.spec.containers", []) or []:
-        for e in c.get("env") or []:
-            if "value" in e:
-                env[e["name"]] = str(e["value"])
-    # Releases predating the CPS env rename bake the legacy PINECONE_HEADLESS__* spelling, and
-    # the schema JSON outranks the DIMENSION env, which can disagree with it.
-    served_id = env.get("PINECONE_CPS__INDEX__INDEX_ID") or env.get("PINECONE_HEADLESS__INDEX_ID")
-    schema = _json_or_none(env.get("PINECONE_CPS__INDEX__SCHEMA") or env.get("PINECONE_HEADLESS__SCHEMA"))
-    served_dim = (
-        get(schema or {}, "fields.embedding.dimension")
-        or env.get("PINECONE_CPS__INDEX__DIMENSION")
-        or env.get("PINECONE_HEADLESS__DIMENSION")
-    )
+    served_id, served_dim = index_identity(deployment_env(deploy))
     if served_id and served_id != idx_id:
         fail(
             f"the running data plane serves index {served_id} but staticIndex.id={idx_id}. "

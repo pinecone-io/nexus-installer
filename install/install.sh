@@ -263,24 +263,24 @@ log "rendering $CHART_REF $CHART_VERSION"
 helm template "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
   -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$PLACEHOLDER_VALUES_FILE" > "$RENDER" \
   || die "could not render $CHART_REF --version $CHART_VERSION (need 'helm registry login $REGISTRY_SERVER'? is the bundle mirrored?)"
-python3 - "$RENDER" "$STATIC_INDEX_ID" "$EMBED_DIMENSION" "$CHART_VERSION" <<'PY' || die "the bundle cannot serve the requested static index (see above)"
+python3 - "$RENDER" "$STATIC_INDEX_ID" "$EMBED_DIMENSION" "$CHART_VERSION" "$HERE" <<'PY' || die "the bundle cannot serve the requested static index (see above)"
 import sys
 import yaml
 
-render, want_id, want_dim, chart = sys.argv[1:5]
-env = None
+render, want_id, want_dim, chart, here = sys.argv[1:6]
+sys.path.insert(0, here)
+from preflight import deployment_env, index_identity  # noqa: E402
+
+got_id = got_dim = None
 with open(render, encoding="utf-8") as f:
     for doc in yaml.safe_load_all(f):
         if not doc or doc.get("kind") != "Deployment" or doc["metadata"]["name"] != "docs-api":
             continue
-        for c in doc["spec"]["template"]["spec"]["containers"]:
-            found = {e["name"]: str(e["value"]) for e in (c.get("env") or []) if "value" in e}
-            if "PINECONE_CPS__INDEX__INDEX_ID" in found:
-                env = found
-if env is None:
+        found_id, found_dim = index_identity(deployment_env(doc))
+        if found_id or found_dim:
+            got_id, got_dim = found_id, found_dim
+if got_id is None and got_dim is None:
     sys.exit(f"render of {chart} has no docs-api Deployment carrying an index id")
-got_id = env.get("PINECONE_CPS__INDEX__INDEX_ID")
-got_dim = env.get("PINECONE_CPS__INDEX__DIMENSION")
 if got_id != want_id or str(got_dim) != str(want_dim):
     sys.exit(
         f"bundle {chart} renders the data plane at index id {got_id} / dimension {got_dim}, "
