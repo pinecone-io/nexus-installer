@@ -17,8 +17,16 @@ environment = "dev"
 # kubernetes_version = "1.35"
 release_channel = "REGULAR"
 
+# sizing: small (the default). The cluster is regional and the pool spans every zone the
+# region has, so node_count is per zone.
 node_count        = 1
 node_machine_type = "e2-standard-8"
+
+# sizing: medium. The 300 GB disk is required, not optional: the DB services cache on the
+# node disk and one of them grows to 100 GiB.
+# node_count        = 1
+# node_machine_type = "n2-standard-16"
+# node_disk_size_gb = 300
 
 # Networking: VPC-native. Nodes take the subnet primary range; pods and Services take the two
 # secondary ranges. GKE allocates a /24 of the pod range per node, so the pod range is the

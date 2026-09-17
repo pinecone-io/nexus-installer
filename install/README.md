@@ -22,7 +22,7 @@ touching nothing.
 |------|--------------|
 | `customer.example.yaml` | The inputs contract. Copy to `customer.yaml` and fill it in. Every field maps one-to-one to what it configures. **Secrets are env-var names, never literals.** |
 | `gen-values.py` | Reads the inputs and emits the Helm overlays (`values.install.yaml`, the storage overlay `values.abs.yaml`, `values.s3.yaml`, or `values.gcs.yaml`, `values.self-hosted.yaml`) + `inputs.env`. Deterministic, secret-free. |
-| `preflight.py` | Validates the consistency invariants. Static by default (values only, no cloud); `--live` adds cluster/cloud checks. **This is the core value.** |
+| `preflight.py` | Validates the consistency invariants. Static by default — values only, except that it reads the cluster's node capacity when the kube context answers; `--live` adds the wider cluster/cloud checks. **This is the core value.** |
 | `create-secrets.sh` | Idempotently creates the namespace, the registry pull Secret, and (shared-key only) the storage-key Secret, from env-var references. Never echoes a value. |
 | `install.sh` | Orchestrates preflight → secrets → `helm install`. `--dry-run` renders the full plan without touching anything. |
 | `image-manifest.sh` | Prints the exact images + OCI chart the install pulls (writes `generated/manifest.txt`), which `preflight --live` then verifies. `--copy` mirrors the bundle into your registry from a source Pinecone grants you. |
@@ -157,8 +157,13 @@ configures. The important ones:
   the proxy asks it for `dimension`-wide (1024) vectors, so the recommended model stays
   at the chart's baked 1024 and installs over OCI with no re-mint (needs a bundle whose
   proxy honors the dimensions request).
-- `sizing` — the stack's footprint, emitted as `global.sizing`. Only `small` is
-  supported.
+- `sizing` — the stack's footprint; becomes the chart's `global.sizing`. `small` is the
+  shipped footprint: one replica of each service, on at least two 8-vCPU / 32-GiB nodes.
+  `medium` is the production footprint: two replicas of every request-path service and larger
+  per-service resources, on at least three 16-vCPU / 64-GiB nodes with 300 GB disks, and
+  object storage (`abs`, `s3` or `gcs`). Preflight measures the cluster's nodes and fails if
+  the class you pick does not fit. `terraform/{aks,eks,gke}-slim` carry the node shape for
+  each class.
 - `storage.containerPrefix` — the stem the seven container names derive from.
 - `storage.auth` — `shared_key` (an account-key Secret) or `workload_identity` (keyless;
   needs `clientId`, the user-assigned managed identity).
@@ -211,7 +216,8 @@ instead of partway through the install.
 
 ## What preflight checks
 
-Static (values only, always safe):
+Static (values only, plus one read-only look at the cluster's nodes when the kube context
+answers):
 
 - **Dimension agreement** — the embedding dimension equals every place the dimension
   appears; and if it (or the index id) differs from the bundle's baked value, it fails
@@ -223,6 +229,10 @@ Static (values only, always safe):
 - **Registry** — the image override is set and the pull-secret server matches the base.
 - **Storage auth** — `workload_identity` has a `clientId`; `shared_key` has an
   `existingSecret`.
+- **Sizing** — the size class is one this release supports, it is on object storage, the
+  generated DB-tier overlay agrees with it, and the cluster has enough allocatable node CPU,
+  memory and disk to run it. The capacity part reads the cluster's nodes when the kube
+  context answers and is skipped when it does not.
 
 Live (`--live`, opt-in, needs `az`/`kubectl` + the `azure.*` inputs):
 

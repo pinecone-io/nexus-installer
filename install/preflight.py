@@ -2,7 +2,7 @@
 """Preflight validator — encode the consistency invariants as checks that FAIL before
 install with a clear message, instead of at pod boot or first ingest.
 
-STATIC checks (default, values-only, no cloud access):
+STATIC checks (default, values-only, no cloud access except the node read below):
   - dimension agreement: embedding.dimension == staticIndex.dimension ==
     indexMetadata.dimension == embeddingModel.dimension, and if the target dimension
     or index id differ from the OCI chart's baked values, FAIL for the OCI path with
@@ -14,7 +14,8 @@ STATIC checks (default, values-only, no cloud access):
   - image registry override set; pull-secret server is a prefix of the registry base.
   - workload_identity: clientId set. shared_key: existingSecret set.
   - security: WARN when the NetworkPolicy enforcement check is turned off.
-  - sizing: a supported size class.
+  - sizing: a supported size class, on object storage, and the node capacity it needs.
+    The capacity part reads the cluster's nodes, and SKIPs when the context does not answer.
   - no leftover example/placeholder values (an `acme` token, an unfilled <...>, or a
     [YOURS] field still equal to customer.example.yaml).
 
@@ -89,7 +90,18 @@ BLOB_SERVICE_ACCOUNTS = [
     "query-executors-slab-sa", "request-log-writers-sa",
 ]
 
-SIZING_CLASSES = ("small",)
+# The size-class constants below are duplicated from gen-values.py, not imported, so that
+# either script runs alone; they have to change together.
+SIZING_CLASSES = ("small", "medium")
+DBSLIM_CELL_KEY = "gate1_kind"
+DBSLIM_PROFILES = {"medium": "self_hosted_medium"}
+DBSLIM_SERVICES = (
+    "docs-api",
+    "request-log-writers",
+    "index-builder",
+    "query-router",
+    "executor-slab",
+)
 
 GREEN, RED, YELLOW, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
 if not sys.stdout.isatty():
@@ -131,6 +143,10 @@ def warn(msg):
     global _warns
     _warns += 1
     print(f"  {YELLOW}WARN{RESET}  {msg}")
+
+
+def skip(msg):
+    print(f"  {YELLOW}SKIP{RESET}  {msg}")
 
 
 def section(title):
@@ -714,14 +730,199 @@ def check_security(inp):
              "is skipped; ensure nexus-api is isolated at a lower layer")
 
 
+# Hand-summed from the chart's pod requests plus the task-pod slots at each class's
+# concurrency cap, so they must be re-summed when the chart's resources move. The ephemeral
+# figures are headroom rather than declared requests: most DB services cache on the node
+# disk without a ceiling, so a short disk evicts under load instead of failing to schedule.
+SIZING_NEEDS = {
+    "small": {
+        "cpu": 8.1,
+        "memory_gib": 19.1,
+        "ephemeral_gib": 100.0,
+        "largest_pod_ephemeral_gib": 20.0,
+    },
+    "medium": {
+        "cpu": 23.0,
+        "memory_gib": 82.0,
+        "ephemeral_gib": 280.0,
+        "largest_pod_ephemeral_gib": 100.0,
+    },
+}
+
+GIB = 2 ** 30
+
+_QUANTITY_UNITS = {
+    "": 1.0, "n": 1e-9, "u": 1e-6, "m": 1e-3,
+    "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15,
+    "Ki": 1024.0, "Mi": 1024.0 ** 2, "Gi": 1024.0 ** 3,
+    "Ti": 1024.0 ** 4, "Pi": 1024.0 ** 5,
+}
+
+
+def parse_quantity(q):
+    """A Kubernetes quantity as a float in base units (cores, bytes); None if unparsable."""
+    m = re.fullmatch(r"(-?[0-9.]+)([a-zA-Z]*)", str(q).strip())
+    if not m or m.group(2) not in _QUANTITY_UNITS:
+        return None
+    try:
+        return float(m.group(1)) * _QUANTITY_UNITS[m.group(2)]
+    except ValueError:
+        return None
+
+
+# Kubernetes applies these itself while a node is settling, so a node carrying one is
+# reported as unmeasurable rather than counted out of a cluster that is only briefly short.
+TRANSIENT_TAINT_KEYS = (
+    "node.kubernetes.io/not-ready",
+    "node.kubernetes.io/unreachable",
+    "node.kubernetes.io/memory-pressure",
+    "node.kubernetes.io/disk-pressure",
+    "node.kubernetes.io/pid-pressure",
+    "node.kubernetes.io/network-unavailable",
+    "node.kubernetes.io/unschedulable",
+)
+
+TF_MODULE_BY_PROVIDER = {"abs": "aks", "s3": "eks", "gcs": "gke"}
+
+
+def schedulable_allocatable(nodes):
+    """Sum allocatable cpu/memory/ephemeral-storage over the nodes an ordinary pod can land
+    on. A node with no kubernetes.io/arch label counts as amd64.
+
+    Returns (totals, per-node ephemeral GiB, count excluded on purpose, nodes unmeasurable)."""
+    totals = {"cpu": 0.0, "memory_gib": 0.0, "ephemeral_gib": 0.0}
+    per_node = []
+    excluded = 0
+    unmeasurable = []
+    for n in nodes:
+        meta = n.get("metadata") or {}
+        spec = n.get("spec") or {}
+        name = meta.get("name", "?")
+        if spec.get("unschedulable"):
+            excluded += 1
+            continue
+        if (meta.get("labels") or {}).get("kubernetes.io/arch", "amd64") != "amd64":
+            excluded += 1
+            continue
+        blocking = [t or {} for t in (spec.get("taints") or [])
+                    if (t or {}).get("effect") in ("NoSchedule", "NoExecute")]
+        transient = [t.get("key") for t in blocking if t.get("key") in TRANSIENT_TAINT_KEYS]
+        if transient:
+            unmeasurable.append(f"node {name} is tainted {transient[0]}")
+            continue
+        if blocking:
+            excluded += 1
+            continue
+        alloc = (n.get("status") or {}).get("allocatable") or {}
+        cpu = parse_quantity(alloc.get("cpu"))
+        mem = parse_quantity(alloc.get("memory"))
+        eph = parse_quantity(alloc.get("ephemeral-storage"))
+        if cpu is None or mem is None or eph is None:
+            unmeasurable.append(f"node {name} does not report readable allocatable "
+                                "cpu/memory/ephemeral-storage")
+            continue
+        totals["cpu"] += cpu
+        totals["memory_gib"] += mem / GIB
+        totals["ephemeral_gib"] += eph / GIB
+        per_node.append((name, eph / GIB))
+    return totals, per_node, excluded, unmeasurable
+
+
+def sizing_reference(inp):
+    cloud = TF_MODULE_BY_PROVIDER.get(storage_provider(inp), "<cloud>")
+    return f"terraform/{cloud}-slim README, Sizing"
+
+
+def check_node_capacity(inp, size):
+    need = SIZING_NEEDS[size]
+    ctx = get(inp, "kubeContext")
+    if not ctx:
+        skip(f"kubeContext not set — node capacity for sizing: {size} not measured")
+        return
+    rc, out = run(["kubectl", "--context", ctx, "get", "nodes", "-o", "json",
+                   "--request-timeout=15s"])
+    nodes = None
+    if rc == 0 and out:
+        try:
+            nodes = (json.loads(out) or {}).get("items") or []
+        except json.JSONDecodeError:
+            nodes = None
+    if nodes is None:
+        skip(f"cluster '{ctx}' not reachable — node capacity for sizing: {size} not measured")
+        return
+
+    totals, per_node, excluded, unmeasurable = schedulable_allocatable(nodes)
+    if unmeasurable:
+        skip(f"cannot measure node capacity for sizing: {size} — {'; '.join(unmeasurable)}. "
+             "Re-run once every node reports a steady state.")
+        return
+    if not per_node:
+        skip(f"no schedulable amd64 nodes reported — node capacity for sizing: {size} "
+             "not measured")
+        return
+
+    excl = (f" ({excluded} node(s) left out: cordoned, reserved by a taint, or not amd64)"
+            if excluded else "")
+    wanted = (f"{need['cpu']:g} CPU / {need['memory_gib']:g} GiB memory / "
+              f"{need['ephemeral_gib']:g} GiB disk")
+    found = (f"{totals['cpu']:g} CPU / {totals['memory_gib']:.1f} GiB / "
+             f"{totals['ephemeral_gib']:.0f} GiB across {len(per_node)} node(s)")
+    reference = sizing_reference(inp)
+    smaller = " or set sizing: small." if size != "small" else "."
+    labels = {"cpu": "CPU", "memory_gib": "memory", "ephemeral_gib": "disk"}
+    short = [labels[k] for k in ("cpu", "memory_gib", "ephemeral_gib") if totals[k] < need[k]]
+    if short:
+        remedy = "Raise the node disk size" if short == ["disk"] else "Add nodes"
+        fail(f"sizing: {size} does not fit: need {wanted}; cluster has {found}{excl}. "
+             f"Short on {', '.join(short)}.\n        "
+             f"{remedy} ({reference}){smaller}")
+        return
+    biggest = max(eph for _, eph in per_node)
+    if biggest < need["largest_pod_ephemeral_gib"]:
+        fail(f"sizing: {size} does not fit: one service needs "
+             f"{need['largest_pod_ephemeral_gib']:g} GiB of disk on a single node; the "
+             f"largest node has {biggest:.0f} GiB.\n        "
+             f"Raise the node disk size ({reference}){smaller}")
+        return
+    ok(f"node capacity for sizing: {size} — needs {wanted}, cluster has {found}{excl}")
+
+
 def check_sizing(inp):
     section("Sizing")
     s = str(get(inp, "sizing", "small"))
     if s not in SIZING_CLASSES:
         fail(f"sizing={s!r} is not a supported size class. "
              f"Supported: {', '.join(SIZING_CLASSES)}")
-    else:
-        ok(f"sizing = {s}")
+        return
+    ok(f"sizing = {s}")
+    if s != "small" and storage_provider(inp) == "local":
+        fail(f"sizing={s!r} requires object storage; storage.provider=local runs at "
+             "sizing: small only")
+
+    gi = load_gen("values.install.yaml")
+    if gi:
+        emitted = get(gi, "global.sizing")
+        if emitted != s:
+            fail(f"generated values.install.yaml has global.sizing={emitted!r}, "
+                 f"customer.yaml has {s!r} — regenerate with gen-values.py")
+        # Blind to the chart renaming its cell_name: the overlay would then land under a key
+        # nothing reads, and every service would quietly run the chart's default profile.
+        want = DBSLIM_PROFILES.get(s)
+        drift = {
+            svc: get(gi, f"db-slim.{svc}.pinecone.config_overrides.{DBSLIM_CELL_KEY}.profile")
+            for svc in DBSLIM_SERVICES
+        }
+        drift = {k: v for k, v in drift.items() if v != want}
+        if drift:
+            fail(f"generated overlay: DB-tier profile is not {want!r} for {drift} — "
+                 "regenerate with gen-values.py")
+        elif want is None:
+            ok(f"generated overlay: no DB-tier overlay ({s} ships the chart default)")
+        else:
+            ok(f"generated overlay: DB-tier profile {want} selected for all "
+               f"{len(DBSLIM_SERVICES)} DB services")
+
+    check_node_capacity(inp, s)
 
 
 def check_buckets_s3(inp):

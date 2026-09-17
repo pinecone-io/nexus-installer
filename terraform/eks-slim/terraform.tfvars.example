@@ -11,8 +11,18 @@ environment = "dev"
 # Pinned to the customer's target minor; EKS selects the patch.
 kubernetes_version = "1.31"
 
+# sizing: small (the default).
 node_count         = 2
 node_instance_type = "m6i.2xlarge"
+
+# sizing: medium, one node per AZ. The 300 GB disk is required, not optional: the DB
+# services cache on the node disk and one of them grows to 100 GiB.
+# node_count         = 3
+# node_min_count     = 3
+# node_max_count     = 5
+# node_instance_type = "m6i.4xlarge"
+# node_disk_size_gb  = 300
+# az_count           = 3
 
 # Networking: the VPC CNI assigns pod IPs from the node subnet, so private subnets are /20
 # per AZ across >= 2 AZs. Prefix delegation raises pods-per-node further.

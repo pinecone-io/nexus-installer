@@ -21,8 +21,9 @@ names. Any individual name can still be overridden (`resource_group_name`, `clus
 
 - Resource group, VNet, and a single `/27` node subnet — `/27` is sufficient because Azure CNI
   **Overlay** puts pods off-subnet.
-- AKS: single-AZ, **one vanilla system pool** (2× `Standard_D8s_v5`, provisional pending load
-  sizing), Overlay networking, OIDC issuer + workload identity enabled, standard-LB egress.
+- AKS: single-AZ, **one vanilla system pool** (2× `Standard_D8s_v5` by default — see
+  [sizing](#sizing)), Overlay networking, OIDC issuer + workload identity enabled, standard-LB
+  egress.
 - User-assigned control-plane identity, pre-granted `Network Contributor` on the subnet (required
   for a BYO subnet; avoids the system-assigned chicken-and-egg).
 - **Optional** (`enable_storage_identity`, default on) storage + workload-identity sub-module:
@@ -34,10 +35,27 @@ names. Any individual name can still be overridden (`resource_group_name`, `clus
   `library`). The suffix set is a fixed product contract — the operator supplies only the stem,
   so no container is hand-enumerated and no manual container-creation step is needed.
 
+## Sizing
+
+The chart's `sizing` class and the node pool have to agree — the install's preflight measures the
+cluster and fails if they do not. Defaults here are `small`.
+
+| `sizing` | `node_count` | `node_vm_size` | `os_disk_size_gb` | cluster total |
+|---|---|---|---|---|
+| `small` | 2 | `Standard_D8s_v5` | 100 | 16 vCPU / 64 GiB |
+| `medium` | 3 | `Standard_D16s_v5` | 300 | 48 vCPU / 192 GiB |
+
+`medium` needs the 300 GB disk: the DB services cache on the node disk, and one of them grows to
+100 GiB on its own, which a single node has to hold.
+
+Moving an existing cluster from `small` to `medium` replaces its nodes: changing `node_vm_size` or
+`os_disk_size_gb` recreates the default pool, and AKS recreates the cluster with it. Plan a
+maintenance window, or stand up a new cluster at `medium` and cut over.
+
 ## Prerequisites
 
 - `az login` with access to the target subscription; `terraform >= 1.5`.
-- D-family vCPU quota in the region (2× D8s_v5 = 16 vCPU).
+- D-family vCPU quota in the region (16 vCPU for `small`, 48 for `medium`).
 - A region that offers the chosen SKU and zones (verify before changing `location`).
 
 ## Usage
