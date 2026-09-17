@@ -264,21 +264,33 @@ helm template "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
   -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$PLACEHOLDER_VALUES_FILE" > "$RENDER" \
   || die "could not render $CHART_REF --version $CHART_VERSION (need 'helm registry login $REGISTRY_SERVER'? is the bundle mirrored?)"
 python3 - "$RENDER" "$STATIC_INDEX_ID" "$EMBED_DIMENSION" "$CHART_VERSION" "$HERE" <<'PY' || die "the bundle cannot serve the requested static index (see above)"
+import json
 import sys
+
 import yaml
 
 render, want_id, want_dim, chart, here = sys.argv[1:6]
 sys.path.insert(0, here)
 from preflight import deployment_env, index_identity  # noqa: E402
 
-got_id = got_dim = None
+# The data plane and the Nexus side take the index by separate routes, so a chart that
+# reads one of them from somewhere else splits the install without failing it.
+got_id = got_dim = meta = None
 with open(render, encoding="utf-8") as f:
     for doc in yaml.safe_load_all(f):
-        if not doc or doc.get("kind") != "Deployment" or doc["metadata"]["name"] != "docs-api":
+        if not doc:
             continue
-        found_id, found_dim = index_identity(deployment_env(doc))
-        if found_id or found_dim:
-            got_id, got_dim = found_id, found_dim
+        name = (doc.get("metadata") or {}).get("name", "")
+        if doc.get("kind") == "Deployment" and name == "docs-api":
+            found_id, found_dim = index_identity(deployment_env(doc))
+            if found_id or found_dim:
+                got_id, got_dim = found_id, found_dim
+        elif doc.get("kind") == "ConfigMap" and name.endswith("-index-metadata"):
+            try:
+                meta = json.loads((doc.get("data") or {}).get("metadata.json", ""))
+            except (TypeError, ValueError):
+                meta = None
+
 if got_id is None and got_dim is None:
     sys.exit(f"render of {chart} has no docs-api Deployment carrying an index id")
 if got_id != want_id or str(got_dim) != str(want_dim):
@@ -286,6 +298,20 @@ if got_id != want_id or str(got_dim) != str(want_dim):
         f"bundle {chart} renders the data plane at index id {got_id} / dimension {got_dim}, "
         f"but your inputs set staticIndex.id={want_id} / embedding.dimension={want_dim}. "
         "This bundle does not carry your static index; use a bundle Pinecone confirms for it."
+    )
+if not isinstance(meta, dict):
+    sys.exit(
+        f"render of {chart} has no readable *-index-metadata ConfigMap. The Nexus services take "
+        "the static index from it, so this bundle would run them on a different index than the "
+        "data plane; use a bundle Pinecone confirms for your inputs."
+    )
+meta_id, meta_dim = meta.get("index_id"), meta.get("dimension")
+if meta_id != want_id or str(meta_dim) != str(want_dim):
+    sys.exit(
+        f"bundle {chart} splits the static index: the data plane renders at id {got_id} / "
+        f"dimension {got_dim} and your inputs set staticIndex.id={want_id} / "
+        f"embedding.dimension={want_dim}, but the Nexus index-metadata ConfigMap carries id "
+        f"{meta_id} / dimension {meta_dim}. Use a bundle Pinecone confirms for your inputs."
     )
 print(f"render carries the requested static index: id {got_id}, dimension {got_dim}")
 PY

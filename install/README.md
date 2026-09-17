@@ -239,9 +239,10 @@ release): the release exists and is `deployed`, `bundle.tag` is a promoted `oci-
 and the index id and dimension in your inputs equal the ones the running release was
 installed with and serves.
 
-Before anything is applied, `install.sh` also renders the resolved chart and checks that the
-data plane it would run carries your `staticIndex.id` and `embedding.dimension`; a bundle that
-renders a different index is refused.
+Before anything is applied, `install.sh` also renders the resolved chart and checks that both
+halves of the install carry your `staticIndex.id` and `embedding.dimension` — the data plane it
+would run, and the index metadata the Nexus services read. A bundle that renders a different
+index, or that gives the two halves different ones, is refused.
 
 Live gateway (`--live-gateway`, opt-in, makes real HTTP calls): mints a token and makes one
 1-token chat completion plus one tiny embedding call through the gateway — see above.
