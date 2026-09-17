@@ -3,10 +3,9 @@
 install with a clear message, instead of at pod boot or first ingest.
 
 STATIC checks (default, values-only, no cloud access):
-  - dimension agreement: embedding.dimension == staticIndex.dimension ==
-    indexMetadata.dimension == embeddingModel.dimension, and if the target dimension
-    or index id differ from the OCI chart's baked values, FAIL for the OCI path with
-    the explicit "OCI cannot override the data-plane dimension / index id" message.
+  - dimension agreement: embedding.dimension == global.staticIndex.dimension ==
+    indexMetadata.dimension == embeddingModel.dimension, and the generated overlay's
+    global.staticIndex (the copy the data plane reads) matches the customer inputs.
   - container prefix: the seven containers derive from the stem.
   - self-hosted profile selected; every catalog api_key_ref has a providerKeys entry;
     all three chat tier slots (lite/standard/pro) + embedding + rerank resolve to a
@@ -34,9 +33,15 @@ LIVE checks (--live, opt-in, shells out to az/kubectl):
   - the workload identity (resolved from its clientId) has a federated credential for
     each blob-accessing service account.
 
+UPGRADE checks (--upgrade, shells out to helm/kubectl against the live release):
+  - the release exists and is in `deployed` state.
+  - bundle.tag is a promoted oci-stable-<id>.
+  - the index id and dimension in the inputs equal the ones the running release was
+    installed with (helm values) and the ones the running data plane serves (docs-api env).
+
 Exit 0 only if no check FAILs. WARN never fails the run.
 
-Usage: python3 preflight.py [-f customer.yaml] [--live]
+Usage: python3 preflight.py [-f customer.yaml] [--live] [--upgrade]
 """
 import argparse
 import base64
@@ -150,13 +155,51 @@ def storage_provider(inp):
     return get(inp, "storage.provider", "abs")
 
 
-def run(cmd):
-    """Run a command, returning (rc, stdout). Never raises."""
+def _json_or_none(out):
+    try:
+        return json.loads(out) if out else None
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+def deployment_env(deploy):
+    """The literal (non-valueFrom) env of every container in a Deployment."""
+    env = {}
+    for c in get(deploy, "spec.template.spec.containers", []) or []:
+        for e in c.get("env") or []:
+            if "value" in e:
+                env[e["name"]] = str(e["value"])
+    return env
+
+
+def index_identity(env):
+    """The index id and dimension a data plane with this env actually serves. The baked
+    schema outranks the DIMENSION env, which a half-finished remint can leave disagreeing
+    with it, and releases predating the CPS rename carry the legacy PINECONE_HEADLESS__*
+    spelling. Returns (id, dimension), either of which may be None."""
+    idx_id = env.get("PINECONE_CPS__INDEX__INDEX_ID") or env.get("PINECONE_HEADLESS__INDEX_ID")
+    schema = _json_or_none(env.get("PINECONE_CPS__INDEX__SCHEMA") or env.get("PINECONE_HEADLESS__SCHEMA"))
+    dim = (
+        get(schema or {}, "fields.embedding.dimension")
+        or env.get("PINECONE_CPS__INDEX__DIMENSION")
+        or env.get("PINECONE_HEADLESS__DIMENSION")
+    )
+    return idx_id, dim
+
+
+def run3(cmd):
+    """Run a command, returning (rc, stdout, stderr). Never raises."""
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
-        return p.returncode, p.stdout.strip()
+        return p.returncode, p.stdout.strip(), p.stderr.strip()
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-        return 1, str(e)
+        return 1, "", str(e)
+
+
+def run(cmd):
+    """Run a command, returning (rc, stdout). Never raises."""
+    rc, out, _ = run3(cmd)
+    return rc, out
 
 
 # --------------------------------------------------------------------------- static
@@ -166,32 +209,13 @@ def check_dimension(inp):
     if dim is None:
         fail("embedding.dimension is not set")
         return
-    baked_dim = get(inp, "bundle.bakedDimension")
-    baked_id = get(inp, "bundle.bakedIndexId")
-    idx_id = get(inp, "staticIndex.id")
-    ok(f"embedding.dimension = {dim} (feeds staticIndex, indexMetadata, embeddingModel)")
-
-    # The OCI path bakes the data-plane dimension + index id; it cannot override them.
-    oci_dim_ok = int(dim) == int(baked_dim) if baked_dim is not None else False
-    oci_id_ok = idx_id == baked_id
-    if not oci_dim_ok:
-        fail(
-            f"target dimension {dim} != OCI chart baked dimension {baked_dim}. "
-            "The OCI install path cannot override the data-plane dimension "
-            "(PINECONE_HEADLESS__DIMENSION + the schema JSON are baked into the "
-            "published db-slim values). Use the local-chart path (install.sh "
-            "--path local --chart-path <chart checkout>, after "
-            "remint-dbslim.sh sets the dimension), or a bundle chart built for this "
-            "dimension. See README 'OCI vs local-chart path'."
-        )
-    else:
-        ok(f"dimension {dim} == baked dimension {baked_dim} -> OCI path can carry it")
+    ok(f"embedding.dimension = {dim} (feeds global.staticIndex, indexMetadata, embeddingModel)")
 
     # Cross-check the emitted overlay: the three dimension sites must all equal `dim`.
     gi = load_gen("values.install.yaml")
     if gi:
         sites = {
-            "staticIndex.dimension": get(gi, "staticIndex.dimension"),
+            "global.staticIndex.dimension": get(gi, "global.staticIndex.dimension"),
             "nexus.config.indexMetadata.dimension": get(gi, "nexus.config.indexMetadata.dimension"),
             "nexus.config.embeddingModel.dimension": get(gi, "nexus.config.embeddingModel.dimension"),
         }
@@ -200,18 +224,18 @@ def check_dimension(inp):
             fail(f"dimension drift in generated values.install.yaml vs embedding.dimension={dim}: {bad}")
         else:
             ok(f"generated overlay: all dimension sites == {dim}")
-        gid = get(gi, "staticIndex.id")
+        gid = get(gi, "global.staticIndex.id")
         gmid = get(gi, "nexus.config.indexMetadata.indexId")
         if gid != gmid:
-            fail(f"index id drift in generated overlay: staticIndex.id={gid} != indexMetadata.indexId={gmid}")
-    if not oci_id_ok:
-        warn(
-            f"staticIndex.id {idx_id} != baked index id {baked_id}. A fresh id also "
-            "cannot be set over OCI (db-slim bakes PINECONE_HEADLESS__INDEX_ID) — "
-            "install.sh will select the local-chart path automatically."
-        )
-    else:
-        ok("staticIndex.id == baked index id -> OCI path can carry it")
+            fail(f"index id drift in generated overlay: global.staticIndex.id={gid} != indexMetadata.indexId={gmid}")
+        want_id = get(inp, "staticIndex.id")
+        if gid != want_id:
+            fail(
+                f"generated overlay: global.staticIndex.id={gid} != staticIndex.id={want_id} from your "
+                "inputs — the data plane renders its index from global.staticIndex; regenerate with gen-values.py"
+            )
+        else:
+            ok("generated overlay: global.staticIndex matches your inputs")
 
 
 # Native output widths of common embedding models, keyed by a substring of the
@@ -249,7 +273,6 @@ def check_embedding_width(inp):
     section("Embedding model output width")
     model, dim, req = _embedding_facts(inp)
     model = model.lower()
-    baked = get(inp, "bundle.bakedDimension")
     if dim is None or not model:
         return
     native = matryoshka = None
@@ -278,14 +301,10 @@ def check_embedding_width(inp):
         )
     else:
         # Non-Matryoshka model that can't reach the declared width by reduction.
-        via = ""
-        if baked is not None and int(native) != int(baked):
-            via = (f" Since {native} != the baked default {baked}, that is the local-chart path "
-                   "(remint-dbslim.sh + install.sh --path local).")
         fail(
             f"'{model}' is not reducible, so it can't emit the declared dimension {dim} "
             f"(it outputs {native}). Set the dimension to {native} or choose a Matryoshka model "
-            f"(text-embedding-3-*).{via}"
+            "(text-embedding-3-*)."
         )
 
 
@@ -782,13 +801,11 @@ def check_storage_gcs(inp):
         fail(f"storage.serviceAccount does not look like a GSA email: {gsa!r}")
 
 
-# Fields the customer must fill with a value only they have; leftover example text
-# here is exactly what slipped through on a real install and failed at curation. Rule 3
-# (equals-example) is scoped to these [YOURS] fields so [DEFAULT]/[PINECONE] values that
-# are meant to be kept as-is (staticIndex.id == bakedIndexId, host.name) never
-# false-positive.
+# Rule 3 (equals-example) is scoped to these [YOURS] fields, so [DEFAULT]/[PINECONE]
+# values meant to be kept as-is (host.name, registry.pullSecretName) never false-positive.
 PLACEHOLDER_EXAMPLE_FIELDS = [
     "kubeContext",
+    "staticIndex.id",
     "registry.base",
     "registry.server",
     "registry.username",
@@ -857,6 +874,121 @@ def check_placeholders(inp):
             )
     else:
         ok("no leftover example/placeholder values")
+
+
+# -------------------------------------------------------------------------- upgrade
+RELEASE = "nexus"
+NAMESPACE = "nexus"
+
+
+def _helm(ctx, *args):
+    return run(["helm", "--kube-context", ctx, "-n", NAMESPACE, *args])
+
+
+def _continuity_verdict(source, live_id, idx_id, live_dim, dim):
+    if live_id in (None, "") and live_dim in (None, ""):
+        warn(f"index continuity unverified — no index id or dimension in {source}")
+        return
+    matched, empty = [], []
+    if live_id in (None, ""):
+        empty.append(f"no index id in {source}")
+    else:
+        matched.append(f"index id {idx_id}")
+    if live_dim in (None, ""):
+        empty.append(f"no dimension in {source}")
+    elif dim is None:
+        empty.append("no embedding.dimension in the inputs")
+    else:
+        matched.append(f"dimension {dim}")
+    if empty and matched:
+        warn(f"index continuity only partly verified — matched {' and '.join(matched)}; {'; '.join(empty)}")
+    elif empty:
+        warn(f"index continuity unverified — {'; '.join(empty)}")
+    else:
+        ok(f"the inputs match {source} on {' and '.join(matched)}")
+
+
+def check_upgrade(inp):
+    section("UPGRADE: live release")
+    ctx = get(inp, "kubeContext")
+    rc, out, err = run3(["helm", "--kube-context", ctx, "-n", NAMESPACE, "status", RELEASE, "-o", "json"])
+    if rc != 0:
+        if "release: not found" in err:
+            fail(
+                f"no Helm release '{RELEASE}' in namespace '{NAMESPACE}' on context '{ctx}' — "
+                "nothing to upgrade. For a first install run install.sh without --upgrade."
+            )
+        else:
+            fail(f"helm status {RELEASE} -n {NAMESPACE} on context '{ctx}' failed: {err or 'no error output'}")
+        return
+    status = get(_json_or_none(out) or {}, "info.status", "unknown")
+    if status != "deployed":
+        fail(
+            f"release '{RELEASE}' is in state '{status}', not 'deployed'. Inspect it with "
+            f"`helm history {RELEASE} -n {NAMESPACE}` and settle it (`helm rollback` to the last "
+            "deployed revision) before upgrading."
+        )
+    else:
+        ok(f"release '{RELEASE}' is deployed")
+
+    section("UPGRADE: bundle tag")
+    tag = str(get(inp, "bundle.tag", ""))
+    rc, out = _helm(ctx, "get", "metadata", RELEASE, "-o", "json")
+    running_app = get(_json_or_none(out) or {}, "appVersion", "?") if rc == 0 else "?"
+    rc, out = _helm(ctx, "get", "values", RELEASE, "-o", "json")
+    live_values = (_json_or_none(out) if rc == 0 else None) or {}
+    running_tag = get(live_values, "global.image.tag") or f"(chart {running_app})"
+    if not tag.startswith("oci-stable-"):
+        fail(
+            f"bundle.tag={tag!r} is not a promoted release. Upgrades take an immutable "
+            "oci-stable-<id>; a raw build id would leave the Nexus services on the tags pinned "
+            "inside that chart instead of moving the whole stack together."
+        )
+    elif tag == running_tag:
+        ok(f"bundle.tag {tag} == running tag — configuration-only upgrade, same images")
+    else:
+        ok(f"running {running_tag} -> {tag}")
+
+    section("UPGRADE: index id + dimension continuity")
+    idx_id = str(get(inp, "staticIndex.id", ""))
+    dim = get(inp, "embedding.dimension")
+    if not live_values:
+        warn("could not read the release values (helm get values) — skipping the installed-with comparison")
+    else:
+        # Releases from earlier bundles carry a top-level copy; current bundles emit only global.
+        live_id = get(live_values, "staticIndex.id") or get(live_values, "global.staticIndex.id")
+        live_dim = get(live_values, "staticIndex.dimension") or get(live_values, "global.staticIndex.dimension")
+        if live_id is not None and str(live_id) != idx_id:
+            fail(
+                f"staticIndex.id={idx_id} but the release was installed with {live_id}. A changed "
+                "index id orphans every stored document; keep the id the release was installed with."
+            )
+        elif live_dim is not None and dim is not None and int(live_dim) != int(dim):
+            fail(
+                f"embedding.dimension={dim} but the release was installed at {live_dim}. The index "
+                "bakes its dimension at creation; keep the dimension the release was installed with."
+            )
+        else:
+            _continuity_verdict("the release values", live_id, idx_id, live_dim, dim)
+
+    rc, out = run(["kubectl", "--context", ctx, "-n", NAMESPACE, "get", "deployment", "docs-api", "-o", "json"])
+    deploy = _json_or_none(out) if rc == 0 else None
+    if not deploy:
+        warn("could not read the running docs-api Deployment — skipping the live data-plane comparison")
+        return
+    served_id, served_dim = index_identity(deployment_env(deploy))
+    if served_id and served_id != idx_id:
+        fail(
+            f"the running data plane serves index {served_id} but staticIndex.id={idx_id}. "
+            "A changed index id orphans every stored document; keep the running id."
+        )
+    elif served_dim and dim is not None and int(served_dim) != int(dim):
+        fail(
+            f"the running data plane serves dimension {served_dim} but embedding.dimension={dim}. "
+            "The index bakes its dimension at creation; keep the running dimension."
+        )
+    else:
+        _continuity_verdict("the running docs-api env", served_id, idx_id, served_dim, dim)
 
 
 # ----------------------------------------------------------------------------- live
@@ -1138,6 +1270,9 @@ def main():
     ap.add_argument("--gen-dir", default=os.path.join(HERE, "generated"),
                     help="dir with the generated overlays to cross-check (default: generated/)")
     ap.add_argument("--live", action="store_true", help="also run cloud/cluster checks (az/kubectl)")
+    ap.add_argument("--upgrade", action="store_true",
+                    help="also check the live release can take this render (deployed state, "
+                         "promoted tag, same index id + dimension); needs helm/kubectl access")
     ap.add_argument("--live-gateway", action="store_true",
                     help="also mint a gateway token and make one real chat + embedding "
                          "(and rerank, when coversRerank) call (needs the client "
@@ -1162,7 +1297,8 @@ def main():
         print(f"Preflight: {args.inputs}  (live gateway only)")
         check_live_gateway(inp)
     else:
-        print(f"Preflight: {args.inputs}" + ("  (static + live)" if args.live else "  (static)"))
+        modes = "static" + (" + live" if args.live else "") + (" + upgrade" if args.upgrade else "")
+        print(f"Preflight: {args.inputs}  ({modes})")
         check_dimension(inp)
         check_embedding_width(inp)
         provider = storage_provider(inp)
@@ -1187,6 +1323,8 @@ def main():
             check_live(inp)
         if args.live_gateway:
             check_live_gateway(inp)
+        if args.upgrade:
+            check_upgrade(inp)
 
     print()
     if _fails:

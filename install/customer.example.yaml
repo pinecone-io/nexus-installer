@@ -45,29 +45,21 @@ registry:
 # --- Image bundle ------------------------------------------------------------
 # `tag` selects the release; Pinecone hands you the value — paste it, don't invent it.
 # A promoted oci-stable-<id> (immutable) runs the whole stack at that ONE tag: you mirror a
-# single tag per image and every pod runs it. A raw build id (main-<sha>) is the chart version
-# suffix (0.0.0-bundle.<id>) and leaves each image on its baked tag. oci-stable-latest is
-# discovery-only — it moves, so don't pin an install to it.
+# single tag per image and every pod runs it; the chart is 0.0.0-bundle.oci-stable-<id>.
+# oci-stable-latest is discovery-only — it moves, so don't pin an install to it.
+# To upgrade, this is the only line you change (see README "Upgrading").
 bundle:
   tag: oci-stable-<id>                    # [PINECONE] promoted immutable release id (couples the stack); paste what Pinecone gives you
-  # The data plane BAKES these into the published OCI chart at build time and the
-  # OCI install path cannot override them (see README "OCI vs local-chart path").
-  # Pinecone ships these two values with the bundle. If your embedding dimension
-  # or a freshly minted index id differ from these, preflight forces the
-  # local-chart path automatically.
-  bakedDimension: 1024                              # [PINECONE] shipped with the bundle; don't change
-  bakedIndexId: 8fe737ee-67aa-47c4-b7b2-ed5ac39c552e  # [PINECONE] shipped with the bundle; don't change
 
 # --- Sizing ------------------------------------------------------------------
 sizing: small                            # [DEFAULT] the only supported class
 
 # --- Static index ------------------------------------------------------------
-# The one index the whole stack shares. Re-minting the id after data is ingested
-# orphans it, so choose once. MINT A FRESH uuid per install (`uuidgen`) UNLESS you
-# are on the OCI path, which must keep the baked id above (preflight enforces this).
+# The one index the whole stack shares. Mint the id ONCE per install (`uuidgen`) and
+# never change it afterwards — every stored document is keyed to it.
 staticIndex:
-  id: 8fe737ee-67aa-47c4-b7b2-ed5ac39c552e   # [PINECONE] keep = bundle.bakedIndexId on OCI; mint fresh only on the local-chart path
-  name: nexus-hybrid                          # [DEFAULT]  -> staticIndex.name
+  id: <uuidgen>                               # [YOURS]    mint once with `uuidgen`; immutable after install
+  name: nexus-hybrid                          # [DEFAULT]  -> global.staticIndex.name
   # dimension is taken from embedding.dimension below (one source of truth).
 
 # --- Object storage ----------------------------------------------------------
@@ -153,19 +145,15 @@ inference:
   # maxOutputTokens: 16384                   # [DEFAULT] chat model max output tokens
 
 # --- Embedding dimension (THE consistency lynchpin) --------------------------
-# One value feeds staticIndex.dimension, nexus.config.indexMetadata.dimension, and
+# One value feeds global.staticIndex.dimension, nexus.config.indexMetadata.dimension, and
 # nexus.config.embeddingModel.dimension, and it must equal the width the embedding
-# model actually emits. A value that differs from bundle.bakedDimension forces the
-# local-chart path.
+# model actually emits. The index bakes it at creation, so it is fixed from then on.
 #
-# text-embedding-3-small emits 1536 natively, but it is a Matryoshka model: set
-# requestDimensions: true and the proxy asks it for `dimension`-wide (1024) vectors
-# instead. That keeps the target at the chart's baked 1024 so the OCI path works for
-# the recommended model with no re-mint. (Needs a bundle whose inference proxy honors
-# the dimensions request; older bundles only support a natively-1024
-# model such as multilingual-e5-large.)
+# text-embedding-3-small emits 1536 natively, but it is a Matryoshka model: with
+# requestDimensions: true the proxy asks it for `dimension`-wide vectors instead, so a
+# smaller dimension (e.g. 1024) is valid for it.
 embedding:
-  dimension: 1024                # [DEFAULT] recommended 1024 (must equal what the model emits; see above)
+  dimension: 1024                # [DEFAULT] must equal what the model emits (or is asked to emit; see above)
   # [DEFAULT] Ask a Matryoshka model to emit `dimension`-wide vectors. Leave unset and the
   # generator defaults it on for a text-embedding-3-* model; set it explicitly to
   # force on/off (e.g. false for a model whose native width already equals dimension).
