@@ -42,9 +42,11 @@ if [ "$UPGRADE" = 1 ]; then
   [ "$DRY_RUN_MODE" != "client" ] || die "--upgrade --dry-run is server-side (it compares against the live release); drop '=client'"
   DRY_RUN_MODE="server"
   HELM_VERB="upgrade"
+  HELM_APPLY_ARGS=(--wait)
 else
   DRY_RUN_MODE="${DRY_RUN_MODE:-client}"
   HELM_VERB="install"
+  HELM_APPLY_ARGS=()
 fi
 
 # Pass --debug through to helm only when asked (helm --debug is a firehose).
@@ -402,9 +404,13 @@ SECRET_VALUES_FILE="$OUT_FILE"
 log "creating secrets"
 "$HERE/create-secrets.sh"
 
-log "helm $HELM_VERB (patient foreground; do NOT Ctrl-C while it waits on the verify hook)"
+if [ "$UPGRADE" = 1 ]; then
+  log "helm upgrade --wait (patient foreground; returns when the rolled pods are Ready, up to 10m)"
+else
+  log "helm $HELM_VERB (patient foreground; do NOT Ctrl-C while it waits on the verify hook)"
+fi
 "${HELM_KUBE[@]}" "$HELM_VERB" "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
-  -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" --timeout 10m
+  -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" --timeout 10m "${HELM_APPLY_ARGS[@]}"
 
 log "$HELM_VERB submitted. Verify: kubectl --context $KUBE_CONTEXT -n $NAMESPACE get pods"
 if [ "$UPGRADE" = 1 ]; then
