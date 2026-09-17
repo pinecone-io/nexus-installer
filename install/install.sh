@@ -142,7 +142,7 @@ load_or_recover_creds() {
   live="$("${HELM_KUBE[@]}" get values "$RELEASE" -n "$NAMESPACE" -o json 2>/dev/null)" \
     || die "could not read the release values (helm get values $RELEASE -n $NAMESPACE)"
   recovered="$(printf '%s\0%s\0%s' "$live" "${NEXUS_JWT_SECRET:-}" "${NEXUS_SESSION_CREDENTIAL:-}" | python3 -c '
-import json, sys
+import json, shlex, sys
 
 mode = sys.argv[1]
 live_json, jwt, session = sys.stdin.buffer.read().split(b"\0")
@@ -152,7 +152,7 @@ live_session = str(((live.get("nexus") or {}).get("config") or {}).get("byocSess
 if not (live_jwt and live_session):
     sys.exit("the release values carry no jwtSecret/byocSessionCredential to reuse; export NEXUS_JWT_SECRET and NEXUS_SESSION_CREDENTIAL to the values the release runs with")
 if mode == "recover":
-    sys.stdout.write(f"NEXUS_JWT_SECRET={live_jwt}\nNEXUS_SESSION_CREDENTIAL={live_session}\n")
+    sys.stdout.write(f"NEXUS_JWT_SECRET={shlex.quote(live_jwt)}\nNEXUS_SESSION_CREDENTIAL={shlex.quote(live_session)}\n")
 elif jwt.decode() != live_jwt or session.decode() != live_session:
     sys.exit(3)
 ' "$mode")" || {

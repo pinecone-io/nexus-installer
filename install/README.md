@@ -326,6 +326,7 @@ to and which an upgrade cannot change.
 
 ```bash
 $EDITOR customer.yaml                      # bundle.tag: the new oci-stable-<id> Pinecone gives you
+python3 gen-values.py                      # regenerate inputs for the new bundle
 ./image-manifest.sh --copy --source <Pinecone source registry> --chart-path /path/to/chart   # mirror the new bundle, as in Quick start step 3
 ./image-manifest.sh --list                 # confirm it resolves from your registry
 ./install.sh --upgrade --dry-run           # preflight + render check + server-side dry-run; applies nothing
