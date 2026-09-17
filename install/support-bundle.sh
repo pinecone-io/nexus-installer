@@ -12,12 +12,13 @@
 # always produced. The exception is redaction: if that fails, no archive is written.
 #
 # Usage:
-#   ./support-bundle.sh [--since 24h] [--tail 20000] [--exec]
+#   ./support-bundle.sh [--since 24h] [--tail 20000] [--exec] [--version-only]
 #                       [-f customer.yaml] [-o OUTPUT_DIR]
 #
 #   --since / --tail  per-container log window; widen when the incident is older
 #   --exec            also collect what needs create on a pod subresource: the gateway
 #                     version probe (port-forward) and `fdbcli status` (exec)
+#   --version-only    print the version block to stdout and stop; no archive is written
 #   -o                where the .tgz is written (default: current directory)
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
@@ -26,6 +27,7 @@ umask 077
 SINCE="24h"
 TAIL="20000"
 ALLOW_EXEC=0
+VERSION_ONLY=0
 OUT_DIR="$PWD"
 LOCAL_PORT=18471
 
@@ -36,6 +38,7 @@ while [ $# -gt 0 ]; do
     --since) SINCE="$2"; shift ;;
     --tail) TAIL="$2"; shift ;;
     --exec) ALLOW_EXEC=1 ;;
+    --version-only) VERSION_ONLY=1 ;;
     -f|--inputs) INPUTS_FILE="$2"; shift ;;
     -o|--out) OUT_DIR="$2"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -162,6 +165,9 @@ collect_helm() {
   local helm_cmd=(helm --kube-context "$KUBE_CONTEXT" -n "$NAMESPACE")
   command -v timeout >/dev/null 2>&1 && helm_cmd=(timeout 60 "${helm_cmd[@]}")
   capture "$BUNDLE/helm/list.yaml" "${helm_cmd[@]}" list --all -o yaml
+  # `get values --all` echoes the credentials install.sh injected with --set, so the rest
+  # is collected only for an archive, which redact.py always rewrites before it is packed.
+  [ "$VERSION_ONLY" = 0 ] || return 0
   capture "$BUNDLE/helm/status.txt" "${helm_cmd[@]}" status "$RELEASE"
   capture "$BUNDLE/helm/values.yaml" "${helm_cmd[@]}" get values "$RELEASE" --all
   capture "$BUNDLE/helm/manifest.yaml" "${helm_cmd[@]}" get manifest "$RELEASE"
@@ -226,6 +232,58 @@ collect_foundationdb_status() {
     "${IN_NS[@]}" exec "$pod" -c fdb -- fdbcli -C /shared/fdb.cluster --exec 'status json'
 }
 
+# `helm list -o yaml` is a flat list of releases and helm fixes no key order, so read one
+# field off ours by scanning, rather than assuming PyYAML is installed.
+helm_release_field() {
+  [ -f "$BUNDLE/helm/list.yaml" ] || return 0
+  awk -v release="$RELEASE" -v want="$1" '
+    /^- / { name = ""; split("", seen) }
+    {
+      line = $0
+      sub(/^(- |  )/, "", line)
+      if (line !~ /^[a-z_]+:/) next
+      key = line; sub(/:.*/, "", key)
+      value = line; sub(/^[a-z_]+:[ ]*/, "", value); gsub(/^"|"$/, "", value)
+      seen[key] = value
+      if (key == "name") name = value
+      if (name == release && want in seen) { print seen[want]; exit }
+    }
+  ' "$BUNDLE/helm/list.yaml" || true
+}
+
+api_image() {
+  "${IN_NS[@]}" get "deploy/$RELEASE-api" \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true
+}
+
+# The probe artifact is a whole `curl -i` response; take the first line that opens a JSON
+# object, or a header wins whenever the body came back empty.
+probe_version_line() {
+  [ -f "$BUNDLE/probes/version.txt" ] || return 0
+  tr -d '\r' < "$BUNDLE/probes/version.txt" | awk '/^\{/ { print; exit }' || true
+}
+
+# `bundle.tag` is the alias the customer pinned in the inputs and can be re-pointed at a
+# different build, so it never stands in for the built id the chart carries. The image is
+# the Deployment's, so it is what the release asks for, not necessarily what is running.
+version_block() {
+  local chart app_version status image endpoint absent="unknown — helm release data not collected"
+  [ ! -f "$BUNDLE/helm/list.yaml" ] || absent="release not found in helm list"
+  chart="$(helm_release_field chart)"
+  app_version="$(helm_release_field app_version)"
+  status="$(helm_release_field status)"
+  image="$(api_image)"
+  endpoint="$(probe_version_line)"
+  cat <<EOF
+  chart             : ${chart:-$absent}
+  chart appVersion  : ${app_version:-unknown}
+  release status    : ${status:-unknown}
+  pinned tag (input): $BUNDLE_TAG
+  api image (spec)  : ${image:-unknown}
+  version endpoint  : ${endpoint:-not collected — re-run with --exec}
+EOF
+}
+
 write_summary() {
   local pods_running pods_total
   pods_total="$(wc -l < "$WORK_DIR/pod-containers.txt" 2>/dev/null || echo 0)"
@@ -236,7 +294,6 @@ Nexus self-hosted support bundle
   context           : $KUBE_CONTEXT
   namespace         : $NAMESPACE
   release           : $RELEASE
-  bundle tag        : $BUNDLE_TAG (DB/FDB image tags come from the chart render; see manifest.txt)
   log window        : --since $SINCE --tail $TAIL
   exec collectors   : $([ "$ALLOW_EXEC" = 1 ] && echo "enabled (version probe, fdbcli status)" || echo "disabled (pass --exec)")
   pods              : $pods_running running of $pods_total
@@ -244,10 +301,28 @@ Nexus self-hosted support bundle
   failed collectors : $FAILURES (see collection-errors.log)
   local tooling     : kubectl $(kubectl version --client -o yaml 2>/dev/null | sed -nE '/^  gitVersion: (.*)/{s//\1/p;q;}'), helm $(helm version --short 2>/dev/null || echo absent)
 
+What this cell is running
+$(version_block)
+
+DB and FoundationDB images are pinned per subchart and are not one of these tags;
+helm/manifest.yaml has the tag each workload was rendered with.
+
 Secret values are not collected and every file was passed through redact.py; see
 REDACTIONS.txt. Review the archive before sending it.
 EOF
 }
+
+if [ "$VERSION_ONLY" = 1 ]; then
+  collect_helm
+  [ "$ALLOW_EXEC" = 0 ] || probe_gateway_version
+  mkdir -p "$WORK_DIR/version"
+  version_block > "$WORK_DIR/version/block.txt"
+  python3 "$HERE/redact.py" "$WORK_DIR/version" > /dev/null \
+    || die "redaction failed — nothing printed, so nothing unredacted can leak"
+  cat "$WORK_DIR/version/block.txt"
+  [ ! -s "$ERRORS" ] || cat "$ERRORS" >&2
+  exit 0
+fi
 
 log "collecting into $BUNDLE_NAME (context $KUBE_CONTEXT, namespace $NAMESPACE)"
 collect_cluster
