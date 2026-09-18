@@ -461,6 +461,7 @@ def build_self_hosted_values(inp, dim):
             "dimension": dim,
             "max_input_chars": 8000,
             "max_batch_size": 96,
+            "provider": "gateway",
             **extras,
         }
     else:
@@ -483,6 +484,7 @@ def build_self_hosted_values(inp, dim):
             "dimension": dim,
             "max_input_chars": 8000,
             "max_batch_size": 96,
+            "provider": "azure-openai",
         }
     # Matryoshka: ask the provider for `dim`-wide vectors instead of the model's native
     # width. Omitted when false, so the values still validate against an older bundle's schema.
@@ -504,6 +506,7 @@ def build_self_hosted_values(inp, dim):
             "max_query_chars": 1000,
             "max_doc_chars": 800,
             "max_docs_per_request": 100,
+            "provider": "gateway" if rerank_gatewayed else rerank_provider,
             # never set api_version on a litellm rerank model — the proxy rejects it.
         }
     }
