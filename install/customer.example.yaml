@@ -63,7 +63,7 @@ staticIndex:
   # dimension is taken from embedding.dimension below (one source of truth).
 
 # --- Object storage ----------------------------------------------------------
-# provider: abs (Azure Blob, below), s3 (AWS), or gcs (GCP) — both further down. You
+# provider: abs (Azure Blob, below), s3 (AWS), or gcs (GCP) — the other two further down. You
 # pre-create the storage; tf-to-inputs.sh fills this block from the aks-slim / eks-slim /
 # gke-slim outputs.
 storage:
@@ -97,7 +97,8 @@ storage:
 # can sit on different providers entirely. `apiStyle: litellm` addresses the model through
 # LiteLLM, which must map `<provider>/<deployment>` to a model of the right kind;
 # `apiStyle: openai` treats the host as plain OpenAI-compatible and looks nothing up.
-# `python3 preflight.py` checks the result, whichever you pick.
+# `python3 preflight.py` checks the result whichever you pick; `--live-models` then calls
+# each model once, so a bad host, key or model name fails here rather than at first use.
 inference:
   llm:
     endpoint: https://acme-aoai.cognitiveservices.azure.com   # [YOURS] chat host
@@ -111,27 +112,37 @@ inference:
     # only when the name HIDES one (a deployment called `chat-prod` fronting a gpt-5
     # model), or every tool-using call fails at runtime.
     # modelFamily: gpt5
-    # [OPTIONAL] Chat token budgets. Omitted, they come from LiteLLM's registry entry for
-    # the model, and a value here can only TIGHTEN that. They become REQUIRED when the
-    # registry does not know the id — nothing fills them then and the proxy will not start
-    # — and under apiStyle: openai, which looks nothing up.
+    # [OPTIONAL] Chat token budgets. Under apiStyle: litellm they come from LiteLLM's
+    # registry entry for the model and a value here can only TIGHTEN that — a larger one is
+    # clamped back down. They become REQUIRED when the registry does not know the id, since
+    # nothing fills them then and the proxy will not start. Under apiStyle: openai nothing is
+    # looked up, so the generator writes the values below as-is: state what your deployment
+    # actually allows rather than leaving a default that overstates it.
     # contextWindow: 272000
     # maxOutputTokens: 16384
     # [OPTIONAL] The proxy serves three chat tiers: lite, standard and pro. Leave `tiers`
     # out and all three run everything above — same model, host, provider and key.
     #
     # Name a tier to override just the settings it lists; the rest still come from the
-    # block above. Usually that is only the model:
+    # block above. Usually that is only the model — three deployments on the one host,
+    # cheapest first:
     # tiers:
-    #   lite:     {deployment: gpt-5-mini}
+    #   lite:     {deployment: gpt-5.6-luna}
     #   standard: {deployment: gpt-5}
-    #   pro:      {deployment: gpt-5}
+    #   pro:      {deployment: gpt-5.6-terra}
     #
     # A tier can differ in more than the model, including its credential — one naming its
     # own keyEnv gets its own, injected like the others:
     # tiers:
-    #   lite:     {deployment: gpt-5-mini}
+    #   lite:     {deployment: gpt-5.6-luna}
     #   standard: {deployment: gpt-5}
+    #   pro:
+    #     deployment: gpt-5.6-terra
+    #     endpoint: https://acme-aoai-pro.cognitiveservices.azure.com
+    #     keyEnv: NEXUS_PRO_KEY
+    #
+    # Or on another vendor entirely, where the model needs its family named:
+    # tiers:
     #   pro:
     #     provider: anthropic
     #     deployment: claude-sonnet-4-5
@@ -144,7 +155,7 @@ inference:
     endpoint: https://acme-aoai.cognitiveservices.azure.com   # [YOURS] embedding host
     provider: azure                      # [DEFAULT] LiteLLM provider prefixing the model id
     deployment: text-embedding-3-small    # [YOURS]  the embedding model
-    keyEnv: NEXUS_LLM_KEY                # [YOURS] env var name holding the embedding key; reuse the chat one only if a single credential covers both
+    keyEnv: NEXUS_LLM_KEY                # [YOURS] env var name holding the embedding key; shared with chat here only because both sit on the one resource
     # [OPTIONAL] apiStyle: litellm | openai — defaults to openai when the gateway block
     # below is set, litellm otherwise.
     # [OPTIONAL] Per-request ceilings the proxy enforces; lower them for a tighter model.
@@ -166,23 +177,28 @@ inference:
     # [OPTIONAL] limits: {maxQueryChars: 1000, maxDocChars: 800, maxDocsPerRequest: 100}
 
   # The earlier flat spelling still works and means the same thing, so an inputs file
-  # written against it keeps generating the same catalog:
-  #   inference.endpoint (chat + embedding), chatDeployment, embeddingDeployment,
-  #   rerankProvider, rerankDeployment, rerankEndpoint, provider, apiStyle, modelFamily,
+  # written against it keeps generating the same catalog. All of these sit directly under
+  # `inference:`, as siblings of the three blocks above:
+  #   endpoint (chat + embedding), chatBaseUrl, embeddingBaseUrl, rerankEndpoint,
+  #   chatDeployment, embeddingDeployment, rerankDeployment, provider, rerankProvider,
+  #   providerLabel, apiStyle, chatApiStyle, embeddingApiStyle, modelFamily,
   #   contextWindow, maxOutputTokens, embeddingLimits, rerankLimits,
   #   llmKeyEnv, embeddingKeyEnv, rerankKeyEnv
 
   # --- [OPTIONAL] Reach chat + embedding through an internal API gateway -----
   # For a provider with no static key and no public network path, where every call
   # goes through an API-management front door instead. Uncomment the block and:
-  #   - `endpoint` above becomes the GATEWAY base (the part before /deployments/...),
-  #     e.g. https://gateway.dev.acme.com/df/genai/sit
-  #   - llmKeyEnv / embeddingKeyEnv become unused: the inference proxy authenticates
-  #     with an OAuth2 client-credentials grant (RFC 6749 §4.4), using the long-lived
-  #     client id/secret you supply below.
-  #   - rerank uses rerankEndpoint + rerankKeyEnv by DEFAULT. Set coversRerank: true
+  #   - the llm and embedding `endpoint`s above become the GATEWAY base (the part before
+  #     /deployments/..., which the generator appends), e.g. https://gateway.acme.com/genai
+  #   - their `keyEnv`s become unused: the inference proxy authenticates with an OAuth2
+  #     client-credentials grant (RFC 6749 §4.4), using the long-lived client id/secret
+  #     you supply below.
+  #   - their `apiStyle` defaults to openai, since a gateway fronts the deployment under a
+  #     path of its own that no registry maps. So state the chat token budgets above —
+  #     nothing looks them up on this path.
+  #   - rerank keeps its own `endpoint` + `keyEnv` by DEFAULT. Set coversRerank: true
   #     (below) to front rerank through the gateway too, so its token auto-refreshes like
-  #     chat/embedding (rerankKeyEnv then unused). Only if the gateway fronts rerank.
+  #     chat/embedding (rerank's `keyEnv` then unused). Only if the gateway fronts rerank.
   # Verify it before installing: python3 preflight.py --live-gateway
   #
   # gateway:
@@ -195,13 +211,7 @@ inference:
   #   subscriptionKeyEnv: NEXUS_GATEWAY_SUBSCRIPTION_KEY  # [OPTIONAL] env var holding the gateway's own key
   #   subscriptionHeader: Ocp-Apim-Subscription-Key       # [DEFAULT] header that key travels in
   #   apiVersion: 2025-01-01-preview         # [YOURS] REQUIRED — sent as the ?api-version= query param on every call
-  #   coversRerank: false                    # [DEFAULT] false = rerank keeps rerankEndpoint + rerankKeyEnv; true = rerank rides the gateway credential (minted, auto-refreshed token). Enable only if the gateway actually fronts your rerank route.
-  #
-  # Gateway-path only: the proxy cannot introspect the deployment's limits when it
-  # talks to a gateway, so state them. Defaults below suit a gpt-5-class deployment;
-  # they must not exceed what your deployment actually allows.
-  # contextWindow: 272000                    # [DEFAULT] chat model context window
-  # maxOutputTokens: 16384                   # [DEFAULT] chat model max output tokens
+  #   coversRerank: false                    # [DEFAULT] false = rerank keeps its own endpoint + keyEnv; true = rerank rides the gateway credential (minted, auto-refreshed token). Enable only if the gateway actually fronts your rerank route.
 
 # --- Embedding dimension (THE consistency lynchpin) --------------------------
 # One value feeds global.staticIndex.dimension, nexus.config.indexMetadata.dimension,
@@ -217,7 +227,7 @@ inference:
 # `python3 preflight.py --live-models` measures the width the model actually returns.
 embedding:
   dimension: 1024                # [YOURS] must equal what the model emits (see above)
-  requestDimensions: true        # [DEFAULT] ask the model for `dimension`-wide vectors; needs a bundle whose proxy honors it
+  requestDimensions: true        # [YOURS] REQUIRED, no default: true asks the model for `dimension`-wide vectors (needs a bundle whose proxy honors it), false takes its native width
 
 # --- Ingress (exposure — you wire the controller / DNS / TLS) ----------------
 # [OPTIONAL] Off by default: the gateway stays ClusterIP and you expose it later.

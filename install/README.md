@@ -84,8 +84,9 @@ $EDITOR customer.yaml                      # fill in the remaining inputs; secre
 # Export the secrets the inputs reference (names are your choice, set in customer.yaml):
 export NEXUS_REGISTRY_PASSWORD=...         # registry.passwordEnv
 export NEXUS_STORAGE_KEY=...               # storage.storageKeyEnv (shared_key only)
-export NEXUS_LLM_KEY=...                   # inference.llmKeyEnv / embeddingKeyEnv
-export NEXUS_RERANK_KEY=...                # inference.rerankKeyEnv
+export NEXUS_LLM_KEY=...                   # inference.llm.keyEnv / inference.embedding.keyEnv
+export NEXUS_RERANK_KEY=...                # inference.rerank.keyEnv
+# plus one per chat tier that names its own keyEnv (inference.llm.tiers.<tier>.keyEnv)
 
 # Gateway path only (inference.gateway set) — these replace the chat/embedding key above,
 # not the rerank key:
@@ -187,11 +188,11 @@ can go through your internal API-management front door instead. Leave `inference
 out and nothing changes: both go straight to the provider with a static key. To turn it on,
 uncomment the `gateway:` block your `customer.yaml` already carries and:
 
-- `inference.endpoint` becomes the **gateway base — the part before
-  `/deployments/<deployment>`**, which the generator appends itself. This is the one value to
-  get right; a base that already spells out the deployment path 404s.
-- `inference.llmKeyEnv` / `embeddingKeyEnv` are unused on this path. The inference proxy
-  authenticates with an OAuth2 client-credentials grant (RFC 6749 §4.4) — you supply the
+- `inference.llm.endpoint` and `inference.embedding.endpoint` become the **gateway base —
+  the part before `/deployments/<deployment>`**, which the generator appends itself. This is
+  the one value to get right; a base that already spells out the deployment path 404s.
+- `inference.llm.keyEnv` / `inference.embedding.keyEnv` are unused on this path. The
+  inference proxy authenticates with an OAuth2 client-credentials grant (RFC 6749 §4.4) — you supply the
   client id and secret (`gateway.clientIdEnv` / `clientSecretEnv`) and, if your gateway
   requires one, its subscription key (`gateway.subscriptionKeyEnv`). Basic client
   authentication base64s the credentials as-is (the ecosystem convention), so prefer
@@ -200,11 +201,11 @@ uncomment the `gateway:` block your `customer.yaml` already carries and:
   scope is refused by the authorization server (Okta answers `400 invalid_scope`), and the
   gateway rejects a call that arrives without `?api-version=`. `gen-values.py` fails rather
   than emit a catalog that cannot work.
-- **Rerank is unaffected**: it keeps `inference.rerankEndpoint` + `rerankKeyEnv` and its own
-  static key.
-- Set `inference.contextWindow` / `inference.maxOutputTokens` — this path does not introspect
-  the deployment's limits. The defaults suit a gpt-5-class deployment and must not exceed what
-  yours allows.
+- **Rerank is unaffected**: it keeps `inference.rerank.endpoint` + `inference.rerank.keyEnv`
+  and its own static key.
+- Set `inference.llm.contextWindow` / `inference.llm.maxOutputTokens` — this path does not
+  introspect the deployment's limits, so the generator writes its defaults, which suit a
+  gpt-5-class deployment. State what yours actually allows.
 - The inference proxy needs egress to `gateway.tokenUrl` (the authorization server) as well as
   to the gateway itself: a separate firewall/DNS allowance from the model endpoints.
 
@@ -219,10 +220,10 @@ instead of partway through the install.
 ## Chat deployment naming (direct path)
 
 The catalog spells your chat model `<inference.llm.provider>/<deployment>`, and the proxy
-asks litellm's registry for its token budgets. A name litellm knows (`gpt-5`, `gpt-5-mini`,
-`gpt-4o`) needs nothing. A name of your own (`gpt5-prod`) has no registry entry, so nothing
-fills the budgets and the proxy refuses to start — rename the deployment, or set
-`contextWindow` and `maxOutputTokens` on the block (or on the tier).
+asks litellm's registry for its token budgets. A name litellm knows (`gpt-5`,
+`gpt-5.6-luna`, `gpt-5.6-terra`) needs nothing. A name of your own (`gpt5-prod`) has no
+registry entry, so nothing fills the budgets and the proxy refuses to start — rename the
+deployment, or set `contextWindow` and `maxOutputTokens` on the block (or on the tier).
 
 The name also decides the **model family**, which sets the request shape: a gpt-5-family
 model needs `max_completion_tokens` and `reasoning_effort` with tools. The proxy infers it
