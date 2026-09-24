@@ -128,6 +128,7 @@ _warns = 0
 _skips = 0
 _gateway_probed = False
 _gateway_probed_keys = set()
+_gateway_skipped_keys = set()
 
 _gen_dir = None
 
@@ -928,10 +929,12 @@ def _embedding_entry(inp):
     return entries[0][1] if entries else {}
 
 
-def _gateway_call_failed(url, status, body):
-    """Report a non-200 gateway answer by failure class. True when the call failed."""
+def _gateway_verdict(url, status, body):
+    """A rate limit means the gateway authenticated the credential before refusing, and a
+    5xx is its own trouble: neither condemns the catalog, neither proves the model. Every
+    other probe here draws the same line."""
     if status == 200:
-        return False
+        return "ok"
     if status == 0:
         fail(
             f"could not reach the gateway {url} at all: {body[:200]}. The token minted, "
@@ -951,9 +954,20 @@ def _gateway_call_failed(url, status, body):
             "be the gateway base up to but NOT including /deployments/, and the "
             "deployment name must match the gateway's own route."
         )
+    elif status == 429:
+        warn(f"gateway rate-limited {url} (429): the credential is valid, since the "
+             "gateway had to authenticate it before refusing, but the model went "
+             "unverified. Re-run when the limit clears.")
+        return "unproven"
+    elif isinstance(status, int) and 500 <= status < 600:
+        warn(f"gateway returned HTTP {status} for {url}: {body[:200]}. That is the "
+             "gateway's own error rather than anything in your config, so the model "
+             "went unverified.")
+        return "unproven"
     else:
         fail(f"gateway returned HTTP {status} for {url}: {body[:200]}")
-    return True
+        return "fail"
+    return "fail"
 
 
 def check_live_gateway(inp):
@@ -1071,20 +1085,25 @@ def check_live_gateway(inp):
     if not entries:
         fail("the gateway is configured but nothing names a model to probe through it")
         return
-    ok(f"probing {len(entries)} gateway-fronted model(s) from {source}")
-
-    seen = set()
+    seen, distinct = set(), []
     for surface, cid, entry in entries:
         key = _entry_probe_key(surface, entry)
         if key in seen:
             continue
         seen.add(key)
+        distinct.append((key, surface, cid, entry))
+    ok(f"probing {len(distinct)} gateway-fronted model(s) from {source}")
+
+    for key, surface, cid, entry in distinct:
         probe = GATEWAY_PROBES.get(surface)
         if probe is None:
             warn(f"{surface} '{cid}': rides the gateway credential but --live-gateway has "
                  "no probe for this surface, so nothing here calls it")
             continue
-        if probe(f"{surface} '{cid}'", entry, token, subscription_key):
+        outcome = probe(f"{surface} '{cid}'", entry, token, subscription_key)
+        if outcome is None:
+            _gateway_skipped_keys.add(key)
+        elif outcome:
             _gateway_probed_keys.add(key)
 
 
@@ -1116,10 +1135,17 @@ def _gateway_entries_from_inputs(inp, api_version):
     out = []
     base, chat = deployed("llm", ("inference.chatBaseUrl", "inference.endpoint"),
                           "inference.chatDeployment")
-    if base and chat:
-        family = inf_cfg(inp, "llm", "modelFamily", "inference.modelFamily")
-        out.append(("chat", chat, {
-            "model": chat, "base_url": f"{base}/deployments/{chat}",
+    tiers = get(inp, "inference.llm.tiers") or {}
+    for tier in REQUIRED_LLM_TIERS:
+        per_tier = tiers.get(tier) or {}
+        endpoint = str(per_tier.get("endpoint", base) or "").rstrip("/")
+        deployment = per_tier.get("deployment", chat)
+        if not (endpoint and deployment):
+            continue
+        family = per_tier.get("modelFamily",
+                              inf_cfg(inp, "llm", "modelFamily", "inference.modelFamily"))
+        out.append(("chat", deployment, {
+            "model": deployment, "base_url": f"{endpoint}/deployments/{deployment}",
             "api_version": api_version,
             **({"model_family": family} if family else {}), **header_refs}))
     base, embed = deployed("embedding", ("inference.embeddingBaseUrl", "inference.endpoint"),
@@ -1127,18 +1153,26 @@ def _gateway_entries_from_inputs(inp, api_version):
     if base and embed:
         entry = {"model": embed, "base_url": f"{base}/deployments/{embed}",
                  "api_version": api_version, **header_refs}
-        catalog_embed = _embedding_entry(inp)
-        if catalog_embed.get("request_dimensions"):
+        # Not _embedding_entry: it reads the overlay, whose absence is what put us here.
+        width = get(inp, "embedding.dimension")
+        if inf_cfg(inp, "embedding", "requestDimensions",
+                   "embedding.requestDimensions") and width:
             entry["request_dimensions"] = True
-            entry["dimension"] = catalog_embed.get("dimension")
+            entry["dimension"] = width
         out.append(("embedding", embed, entry))
     if get(inp, "inference.gateway.coversRerank"):
         base, rerank = deployed("rerank", ("inference.rerankEndpoint",),
                                 "inference.rerankDeployment")
         if base and rerank:
+            provider = str(inf_cfg(inp, "rerank", "provider", "inference.rerankProvider",
+                                   default="cohere") or "")
+            # Mirrors gen-values: the prefix is what routes the call, and litellm's
+            # azure_ai route sends a bare base to the legacy /v1/rerank.
+            model = f"{provider}/{rerank}" if provider else rerank
+            if provider == "azure_ai" and not base.endswith(("/v1/rerank", "/v2/rerank")):
+                base = base + "/rerank" if base.endswith(("/v1", "/v2")) else base + "/v2/rerank"
             # No api_version: a litellm rerank entry carries none, so the proxy sends none.
-            out.append(("rerank", rerank, {"model": rerank,
-                                           "base_url": f"{base}/v2/rerank", **header_refs}))
+            out.append(("rerank", rerank, {"model": model, "base_url": base, **header_refs}))
         else:
             fail("inference.gateway.coversRerank is set but the rerank endpoint / "
                  "deployment is missing, so rerank has no gateway route to probe")
@@ -1173,13 +1207,19 @@ def _gateway_chat(label, entry, token, subscription_key):
     headers = _gateway_headers(entry, token, subscription_key)
     family = entry.get("model_family")
     budget = "max_completion_tokens" if _is_gpt5_family(model, family) else "max_tokens"
-    base_body = {"model": model, "messages": [{"role": "user", "content": "ping"}], budget: 512}
+    declared = entry.get("max_output_tokens")
+    room = declared if isinstance(declared, int) and 0 < declared < 512 else 512
+    base_body = {"model": model, "messages": [{"role": "user", "content": "ping"}], budget: room}
     status, body = _http_post(url, json.dumps(base_body).encode(), headers)
     if status == 400 and ("max_tokens" in body or "output limit" in body):
         ok(f"{label}: hit the model's output limit ({url}, {budget}) — auth and routing proven")
+        warn(f"{label}: the deployment refused a {room}-token budget, so tool calling and "
+             "structured output went unprobed. Set max_output_tokens on the entry to what "
+             "the deployment actually allows, then re-run.")
         return True
-    if _gateway_call_failed(url, status, body):
-        return False
+    verdict = _gateway_verdict(url, status, body)
+    if verdict != "ok":
+        return False if verdict == "fail" else None
     ok(f"{label}: chat completion through the gateway succeeded ({url}, {budget})")
 
     def call(extra):
@@ -1206,8 +1246,9 @@ def _gateway_embed(label, entry, token, subscription_key):
     if want_dim is not None:
         body_obj["dimensions"] = want_dim
     status, body = _http_post(url, json.dumps(body_obj).encode(), headers)
-    if _gateway_call_failed(url, status, body):
-        return False
+    verdict = _gateway_verdict(url, status, body)
+    if verdict != "ok":
+        return False if verdict == "fail" else None
     ok(f"{label}: embedding through the gateway succeeded ({url})")
     if want_dim is None:
         return True
@@ -1230,19 +1271,43 @@ def _gateway_embed(label, entry, token, subscription_key):
 
 
 def _gateway_rerank(label, entry, token, subscription_key):
-    if not str(entry.get("base_url") or "").strip():
-        warn(f"{label}: rides the gateway credential but declares no base_url, so there "
-             "is no route to probe")
-        return False
-    url = _gateway_url(entry)
+    """A rerank entry is api_style litellm whatever the posture, and litellm owns both the
+    request path (some providers replace the one base_url spells) and the body, so
+    hand-building either would probe a request the install never makes. The minted token
+    goes in as the api_key, which is where litellm reads the bearer from."""
+    lite = litellm_or_none()
+    if lite is None:
+        skip(f"{label}: litellm is the client the proxy reranks with, and its route and "
+             f"body cannot be reproduced without it. Re-run with: {litellm_hint()}")
+        return None
+    kwargs = {
+        "model": entry.get("model"),
+        "api_key": token,
+        "query": "ping",
+        "documents": ["ping", "pong"],
+        "return_documents": False,
+    }
+    if entry.get("base_url"):
+        kwargs["api_base"] = entry["base_url"]
+    # litellm's rerank path reads `extra_headers` on one provider branch and `headers` on
+    # the rest; the install sends both.
     headers = _gateway_headers(entry, token, subscription_key)
-    payload = json.dumps({"model": entry.get("model"), "query": "ping",
-                          "documents": ["ping", "pong"], "top_n": 2}).encode()
-    status, body = _http_post(url, payload, headers)
-    if _gateway_call_failed(url, status, body):
-        return False
-    ok(f"{label}: rerank through the gateway succeeded ({url})")
-    return True
+    headers.pop("Authorization", None)
+    headers.pop("Content-Type", None)
+    if headers:
+        kwargs["headers"] = dict(headers)
+        kwargs["extra_headers"] = dict(headers)
+    status, detail, _ = _litellm_call(lite.rerank, **kwargs)
+    where = entry.get("base_url") or "litellm's default endpoint for the provider"
+    if _report_probe(label, status, detail, f" (via litellm, {where})"):
+        return True
+    unproven = _classify_probe(status, detail)[0] == "warn"
+    if unproven:
+        # litellm's rerank path reports every upstream status as a 500, so a gateway that
+        # does not publish this route is indistinguishable here from one having a bad minute.
+        warn(f"{label}: coversRerank sends rerank through the gateway, so that route has "
+             f"to be one the gateway publishes. Confirm it fronts {where}.")
+    return None if unproven else False
 
 
 GATEWAY_PROBES = {"chat": _gateway_chat, "embedding": _gateway_embed,
@@ -1708,7 +1773,10 @@ def check_live_models(inp):
         if entry.get("credential_ref"):
             if _entry_probe_key(surface, entry) in _gateway_probed_keys:
                 ok(f"{label}: draws its bearer from the OAuth2 credential; the gateway "
-                   "probe above called this entry, capabilities included")
+                   "probe above called this entry")
+            elif _entry_probe_key(surface, entry) in _gateway_skipped_keys:
+                skip(f"{label}: draws its bearer from the OAuth2 credential; the gateway "
+                     "probe above could not run for it")
             elif _gateway_probed:
                 fail(f"{label}: draws its bearer from the OAuth2 credential, but the "
                      "gateway probe above did not call it — see the failure it reported "
