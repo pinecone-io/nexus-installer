@@ -1302,10 +1302,14 @@ def _gateway_rerank(label, entry, token, subscription_key):
     if status == 200:
         ok(f"{label}: rerank through the gateway succeeded (via litellm, {where})")
         return True
-    # litellm's rerank path reports every upstream status as a 500, so the wording is the
-    # only thing separating a gateway that never answered from one that answered badly.
-    if re.search(r"connection (error|refused)|errno|timed? ?out|name or service|"
-                 r"nodename nor servname|failed to establish", detail, re.IGNORECASE):
+    # litellm's rerank path reports every upstream status as a 500, so a gateway that never
+    # answered is told from one that answered badly by two things together: socket wording,
+    # and no response body. An upstream timeout says "timed out" too -- inside the body it
+    # returned.
+    answered = "{" in detail
+    if not answered and re.search(
+            r"connection (error|refused)|errno|timed? ?out|name or service|"
+            r"nodename nor servname|failed to establish", detail, re.IGNORECASE):
         fail(f"{label}: could not reach {where} at all: {detail[:200]}. The token minted, "
              "so this is a reachability problem rather than a credential one — this host "
              "needs a firewall/DNS allowance to the rerank route.")
