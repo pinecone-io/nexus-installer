@@ -1299,15 +1299,24 @@ def _gateway_rerank(label, entry, token, subscription_key):
         kwargs["extra_headers"] = dict(headers)
     status, detail, _ = _litellm_call(lite.rerank, **kwargs)
     where = entry.get("base_url") or "litellm's default endpoint for the provider"
-    if _report_probe(label, status, detail, f" (via litellm, {where})"):
+    if status == 200:
+        ok(f"{label}: rerank through the gateway succeeded (via litellm, {where})")
         return True
-    unproven = _classify_probe(status, detail)[0] == "warn"
-    if unproven:
-        # litellm's rerank path reports every upstream status as a 500, so a gateway that
-        # does not publish this route is indistinguishable here from one having a bad minute.
-        warn(f"{label}: coversRerank sends rerank through the gateway, so that route has "
-             f"to be one the gateway publishes. Confirm it fronts {where}.")
-    return None if unproven else False
+    # litellm's rerank path reports every upstream status as a 500, so the wording is the
+    # only thing separating a gateway that never answered from one that answered badly.
+    if re.search(r"connection (error|refused)|errno|timed? ?out|name or service|"
+                 r"nodename nor servname|failed to establish", detail, re.IGNORECASE):
+        fail(f"{label}: could not reach {where} at all: {detail[:200]}. The token minted, "
+             "so this is a reachability problem rather than a credential one — this host "
+             "needs a firewall/DNS allowance to the rerank route.")
+        return False
+    if status == 429 or (isinstance(status, int) and 500 <= status < 600):
+        warn(f"{label}: {where} answered {status}: {detail[:160]}. The model went "
+             "unverified. coversRerank sends rerank through the gateway, so confirm that "
+             "route is one the gateway publishes.")
+        return None
+    _report_probe(label, status, detail, f" (via litellm, {where})")
+    return False
 
 
 GATEWAY_PROBES = {"chat": _gateway_chat, "embedding": _gateway_embed,
