@@ -265,6 +265,8 @@ log "rendering $CHART_REF $CHART_VERSION"
 helm template "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
   -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$PLACEHOLDER_VALUES_FILE" > "$RENDER" \
   || die "could not render $CHART_REF --version $CHART_VERSION (need 'helm registry login $REGISTRY_SERVER'? is the bundle mirrored?)"
+! grep -q supported_curate_models "$RENDER" \
+  || die "bundle $CHART_VERSION still expects lite/standard/pro model tiers, which these values no longer carry; use the toolkit released with that bundle, or move to a bundle with per-work-area model defaults"
 python3 - "$RENDER" "$STATIC_INDEX_ID" "$EMBED_DIMENSION" "$CHART_VERSION" "$HERE" <<'PY' || die "the bundle cannot serve the requested static index (see above)"
 import json
 import sys

@@ -160,7 +160,7 @@ log "5/6 retrieval OK (total_hits=$HITS)"
 # A cited answer is the check that proves the model endpoints are wired:
 # embedding on ingest, and chat + rerank through the inference proxy on query.
 QID="$(api POST /api/query -H 'Content-Type: application/json' \
-  -d "{\"ask\":\"What is the Larkspur Line ticket price?\",\"scope\":[\"$SLUG\"],\"model\":\"standard\",\"background\":true}" \
+  -d "{\"ask\":\"What is the Larkspur Line ticket price?\",\"scope\":[\"$SLUG\"],\"background\":true}" \
   | jq -r '.id // empty')"
 [ -n "$QID" ] || die "query was not accepted"
 BODY="$(poll "/api/queries/$QID" status '^completed$' '^(failed|error|cancelled)$' 120)" \

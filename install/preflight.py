@@ -8,8 +8,7 @@ STATIC checks (default, values-only, no cloud access):
     global.staticIndex (the copy the data plane reads) matches the customer inputs.
   - container prefix: the seven containers derive from the stem.
   - self-hosted profile selected; every catalog api_key_ref has a providerKeys entry;
-    all three chat tier slots (lite/standard/pro) + embedding + rerank resolve to a
-    defined catalog entry.
+    the embedding and rerank tier slots resolve to a defined catalog entry.
   - image registry override set; pull-secret server is a prefix of the registry base.
   - workload_identity: clientId set. shared_key: existingSecret set.
   - security: WARN when the NetworkPolicy enforcement check is turned off.
@@ -352,7 +351,7 @@ def check_inference(inp):
             "llmModels": {"chat": {"api_key_ref": "llm-key"}},
             "embeddingModels": {embed: {"api_key_ref": "embedding-key"}},
             "rerankModels": {"rerank": {"api_key_ref": "rerank-key"}},
-            "tiers": {"lite": "chat", "standard": "chat", "pro": "chat", "embedding": embed, "rerank": "rerank"},
+            "tiers": {"embedding": embed, "rerank": "rerank"},
             "providerKeys": {"llm-key": "", "embedding-key": "", "rerank-key": ""},
         }
 
@@ -402,11 +401,6 @@ def check_inference(inp):
         fail(f"tier slots referencing an undefined catalog entry: {unresolved}")
     else:
         ok("all tier slots resolve to a defined catalog entry")
-    chat_tiers = [tiers.get(s) for s in ("lite", "standard", "pro")]
-    if all(chat_tiers):
-        ok("three chat tier slots configured (lite/standard/pro)")
-    else:
-        fail(f"chat tiers incomplete — lite/standard/pro must all be set, got {chat_tiers}")
 
     # Naming guardrail — advisory, not fatal (customer may differ).
     embed_dep = get(inp, "inference.embeddingDeployment")

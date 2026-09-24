@@ -222,8 +222,8 @@ Static (values only, always safe):
   read — matches the static index in your inputs.
 - **Container prefix** — the seven containers derive from the stem.
 - **Inference catalog** — the self-hosted profile is selected, every credential ref (key,
-  gateway client, subscription key) has a `providerKeys` entry, and all tier slots resolve
-  to a defined catalog entry.
+  gateway client, subscription key) has a `providerKeys` entry, and the embedding and
+  rerank tier slots resolve to a defined catalog entry.
 - **Registry** — the image override is set and the pull-secret server matches the base.
 - **Storage auth** — `workload_identity` has a `clientId`; `shared_key` has an
   `existingSecret`.
