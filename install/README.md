@@ -52,14 +52,15 @@ Before running anything:
   does not create them). The optional `terraform/aks-slim` module provisions them for
   you; otherwise create them before install. Names derive from your stem: `<stem>-db`
   plus `<stem>-nexus-{source,knowledge,archive,traces,snapshots,library}`.
-- **Model deployments** (chat, embedding, rerank) on OpenAI-compatible endpoints. The
-  proxy validates every model id against LiteLLM's registry at startup, so the ids must be
-  ones LiteLLM maps — chat `gpt-5`, embedding `text-embedding-3-small`. Rerank is
-  `<rerankProvider>/<rerankDeployment>`: `azure_ai` (recommended) with LiteLLM's canonical
-  name (e.g. `cohere-rerank-v4.0-fast`) for the current Cohere reranker, or `cohere` with
-  the older `rerank-v3.5` — see `customer.example.yaml`. **The embedding model's dimension
-  fixes the index dimension and is immutable after install; so is the index id you mint
-  (`staticIndex.id`, `uuidgen` once).**
+- **Model deployments** — three surfaces configured independently (`inference.llm`,
+  `inference.embedding`, `inference.rerank`), so they can sit on different providers. Each
+  id is `<provider>/<deployment>` and LiteLLM must map it to a model of the right kind, so
+  ids its registry knows are the safe choice; for chat the name is effectively required
+  (see "Chat deployment naming"). The chat block can give a model per tier, each with its
+  own provider, host and key. Rerank works with any provider that issues an API key.
+  `customer.example.yaml` documents the knobs and `preflight.py` checks the result. **The
+  embedding model's dimension fixes the index dimension and is immutable after install; so is
+  the index id you mint (`staticIndex.id`, `uuidgen` once).**
 - **Tooling:** `kubectl`, `helm`, `python3`, `openssl`; `az` for the live preflight checks.
   Install the one Python dependency (PyYAML) into a virtualenv and keep it active for the
   run (the generator, preflight, and install wrapper all use it):
@@ -83,8 +84,9 @@ $EDITOR customer.yaml                      # fill in the remaining inputs; secre
 # Export the secrets the inputs reference (names are your choice, set in customer.yaml):
 export NEXUS_REGISTRY_PASSWORD=...         # registry.passwordEnv
 export NEXUS_STORAGE_KEY=...               # storage.storageKeyEnv (shared_key only)
-export NEXUS_LLM_KEY=...                   # inference.llmKeyEnv / embeddingKeyEnv
-export NEXUS_RERANK_KEY=...                # inference.rerankKeyEnv
+export NEXUS_LLM_KEY=...                   # inference.llm.keyEnv / inference.embedding.keyEnv
+export NEXUS_RERANK_KEY=...                # inference.rerank.keyEnv
+# plus one per chat tier that names its own keyEnv (inference.llm.tiers.<tier>.keyEnv)
 
 # Gateway path only (inference.gateway set) — these replace the chat/embedding key above,
 # not the rerank key:
@@ -95,6 +97,7 @@ export NEXUS_GATEWAY_SUBSCRIPTION_KEY=...  # inference.gateway.subscriptionKeyEn
 # 1. Generate overlays + validate (no cluster access needed):
 python3 gen-values.py
 python3 preflight.py                       # static invariants; fix any FAIL before continuing
+pip install 'litellm==1.96.2'              # optional, once: adds the model-id checks (still offline)
 
 # 2. Verify what's staged: list the exact images + chart the install pulls (writes
 #    generated/manifest.txt, which preflight --live verifies). It reads the chart from your
@@ -110,6 +113,7 @@ helm registry login <registry.base host>                    # your registry
 # 4. Optional live checks (containers, image presence, identity in the cloud):
 python3 preflight.py --live
 python3 preflight.py --live-gateway        # gateway path only — run it before installing
+python3 preflight.py --live-models         # one real chat + embedding + rerank call at the provider
 
 # 5. Dry-run the whole plan (touches nothing), then install (helm pulls the chart from
 #    your registry, using the login from step 2):
@@ -184,11 +188,11 @@ can go through your internal API-management front door instead. Leave `inference
 out and nothing changes: both go straight to the provider with a static key. To turn it on,
 uncomment the `gateway:` block your `customer.yaml` already carries and:
 
-- `inference.endpoint` becomes the **gateway base — the part before
-  `/deployments/<deployment>`**, which the generator appends itself. This is the one value to
-  get right; a base that already spells out the deployment path 404s.
-- `inference.llmKeyEnv` / `embeddingKeyEnv` are unused on this path. The inference proxy
-  authenticates with an OAuth2 client-credentials grant (RFC 6749 §4.4) — you supply the
+- `inference.llm.endpoint` and `inference.embedding.endpoint` become the **gateway base —
+  the part before `/deployments/<deployment>`**, which the generator appends itself. This is
+  the one value to get right; a base that already spells out the deployment path 404s.
+- `inference.llm.keyEnv` / `inference.embedding.keyEnv` are unused on this path. The
+  inference proxy authenticates with an OAuth2 client-credentials grant (RFC 6749 §4.4) — you supply the
   client id and secret (`gateway.clientIdEnv` / `clientSecretEnv`) and, if your gateway
   requires one, its subscription key (`gateway.subscriptionKeyEnv`). Basic client
   authentication base64s the credentials as-is (the ecosystem convention), so prefer
@@ -197,11 +201,16 @@ uncomment the `gateway:` block your `customer.yaml` already carries and:
   scope is refused by the authorization server (Okta answers `400 invalid_scope`), and the
   gateway rejects a call that arrives without `?api-version=`. `gen-values.py` fails rather
   than emit a catalog that cannot work.
-- **Rerank is unaffected**: it keeps `inference.rerankEndpoint` + `rerankKeyEnv` and its own
-  static key.
-- Set `inference.contextWindow` / `inference.maxOutputTokens` — this path does not introspect
-  the deployment's limits. The defaults suit a gpt-5-class deployment and must not exceed what
-  yours allows.
+- **Chat tiers all ride the gateway credential.** A tier may still name its own
+  `deployment` and `endpoint`, and `--live-gateway` calls each one. A tier that names its
+  own `keyEnv`, or overrides `apiStyle` to `litellm`, is refused rather than silently
+  ignored — the key would be dropped for the gateway credential, and the litellm route
+  would rewrite the gateway's own path.
+- **Rerank is unaffected**: it keeps `inference.rerank.endpoint` + `inference.rerank.keyEnv`
+  and its own static key.
+- Set `inference.llm.contextWindow` / `inference.llm.maxOutputTokens` — this path does not
+  introspect the deployment's limits, so the generator writes its defaults, which suit a
+  gpt-5-class deployment. State what yours actually allows.
 - The inference proxy needs egress to `gateway.tokenUrl` (the authorization server) as well as
   to the gateway itself: a separate firewall/DNS allowance from the model endpoints.
 
@@ -213,9 +222,25 @@ them. So a wrong secret, an unauthorized scope, the wrong gateway environment, a
 embeddings route, or a gateway that drops the `dimensions` request fails here in seconds
 instead of partway through the install.
 
+## Chat deployment naming (direct path)
+
+The catalog spells your chat model `<inference.llm.provider>/<deployment>`, and the proxy
+asks litellm's registry for its token budgets. A name litellm knows (`gpt-5`,
+`gpt-5.6-luna`, `gpt-5.6-terra`) needs nothing. A name of your own (`gpt5-prod`) has no
+registry entry, so nothing fills the budgets and the proxy refuses to start — rename the
+deployment, or set `contextWindow` and `maxOutputTokens` on the block (or on the tier).
+
+The name also decides the **model family**, which sets the request shape: a gpt-5-family
+model needs `max_completion_tokens` and `reasoning_effort` with tools. The proxy infers it
+from the model id, and most models have no family and need none — but a name that *hides*
+one (`chat-prod` fronting gpt-5) needs `modelFamily: gpt5` on the block or the tier, since
+nothing can infer it.
+
 ## What preflight checks
 
-Static (values only, always safe):
+Static (values only, always safe). The catalog checks read the emitted
+`generated/values.self-hosted.yaml` — the artifact that reaches the cluster — and SKIP
+together when it is absent:
 
 - **Dimension agreement** — the embedding dimension equals every place the dimension
   appears, and the generated `global.staticIndex` — the copy the data-plane services
@@ -224,6 +249,16 @@ Static (values only, always safe):
 - **Inference catalog** — the self-hosted profile is selected, every credential ref (key,
   gateway client, subscription key) has a `providerKeys` entry, and all tier slots resolve
   to a defined catalog entry.
+- **Catalog entry shape** — every model and credential entry satisfies the proxy's own
+  schema: required fields present, ceilings and prices in range, no field the schema
+  forbids, and no field it does not declare (it rejects extras, so a typo fails startup).
+  The generator gets these right; this is the guard for a hand-edited overlay.
+- **Model ids vs litellm's registry** — for `api_style: litellm` entries only, since that is
+  the only style the proxy looks up. Asks litellm what the proxy asks it at startup: the
+  surface's `mode` matches, a chat model carries the `tools` / `response_format` params
+  Nexus needs, and its budgets resolve. Reads the registry bundled in the pinned wheel, so
+  it stays offline and gives the same answers the proxy will. **Needs litellm** (see Quick
+  start); without it these SKIP and the summary says so.
 - **Registry** — the image override is set and the pull-secret server matches the base.
 - **Storage auth** — `workload_identity` has a `clientId`; `shared_key` has an
   `existingSecret`.
@@ -244,8 +279,18 @@ halves of the install carry your `staticIndex.id` and `embedding.dimension` — 
 would run, and the index metadata the Nexus services read. A bundle that renders a different
 index, or that gives the two halves different ones, is refused.
 
-Live gateway (`--live-gateway`, opt-in, makes real HTTP calls): mints a token and makes one
-1-token chat completion plus one tiny embedding call through the gateway — see above.
+Live gateway (`--live-gateway`, opt-in, makes real HTTP calls): mints a token, then calls
+every model the gateway fronts — each at the host and deployment its own catalog entry names,
+so three chat tiers on three deployments are three calls — see above.
+
+Live models (`--live-models`, opt-in, makes real HTTP calls): one real call per model in the
+generated catalog, issued by the client that model's `api_style` names — so the probe sends
+what the proxy will send, and a bad key, a wrong endpoint or a misspelled deployment fails in
+seconds. The embedding leg **measures** the returned vector width against the catalog's
+dimension. An entry whose bearer comes from the gateway credential has no static key to call
+with, so the gateway probe above covers it and runs from here too; an entry that probe did not
+reach is reported as unproven rather than passed. Needs the relevant key env vars exported,
+and litellm for the litellm-style legs.
 
 ## Terraform hand-off (greenfield) — optional
 
