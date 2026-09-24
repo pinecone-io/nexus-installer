@@ -9,8 +9,9 @@ every field) and emits, into the output dir (default install/generated/):
                           ingress, nexus.config index/embed).
   values.abs.yaml         Azure Blob overlay: blob.* + global.blob.* + the db-slim
                           data-dir overlay + nexus.config.cloud=azure.
-  values.self-hosted.yaml self-hosted config profile + the inference catalog + tiers +
-                          empty providerKeys stubs (real keys are injected at install).
+  values.self-hosted.yaml self-hosted config profile + the inference catalog + the
+                          embedding/rerank defaults + empty providerKeys stubs (real keys
+                          are injected at install).
   inputs.env              non-secret scalars install.sh / image-manifest.sh / create-secrets.sh
                           need, so bash needs no YAML parser. Contains NO secrets.
 
@@ -428,8 +429,6 @@ def build_self_hosted_values(inp, dim):
             "/deployments onward."
         )
 
-    # the proxy requires each tier to resolve to a distinct model ref
-    tier_labels = {"lite": "Chat (lite)", "standard": "Chat (standard)", "pro": "Chat (pro)"}
     if gw:
         # api_style openai sends the path exactly as base_url spells it. litellm's
         # `azure/` provider would insert /openai/deployments/, which an APIM front
@@ -441,18 +440,15 @@ def build_self_hosted_values(inp, dim):
         # the deployment behind the gateway, which only the customer knows.
         context_window = int_opt(inp, "inference.contextWindow", 272000)
         max_output_tokens = int_opt(inp, "inference.maxOutputTokens", 16384)
-        llm_models = {
-            f"chat-{t}": {
-                "api_style": "openai",
-                "model": chat,
-                "base_url": f"{endpoint.rstrip('/')}/deployments/{chat}",
-                "label": lbl,
-                "provider": "gateway",
-                "context_window": context_window,
-                "max_output_tokens": max_output_tokens,
-                **extras,
-            }
-            for t, lbl in tier_labels.items()
+        chat_model = {
+            "api_style": "openai",
+            "model": chat,
+            "base_url": f"{endpoint.rstrip('/')}/deployments/{chat}",
+            "label": chat,
+            "provider": "gateway",
+            "context_window": context_window,
+            "max_output_tokens": max_output_tokens,
+            **extras,
         }
         embed_entry = {
             "api_style": "openai",
@@ -464,16 +460,13 @@ def build_self_hosted_values(inp, dim):
             **extras,
         }
     else:
-        llm_models = {
-            f"chat-{t}": {
-                "api_style": "litellm",
-                "model": f"azure/{chat}",
-                "base_url": endpoint,
-                "api_key_ref": LLM_KEY_REF,
-                "label": lbl,
-                "provider": "azure-openai",
-            }
-            for t, lbl in tier_labels.items()
+        chat_model = {
+            "api_style": "litellm",
+            "model": f"azure/{chat}",
+            "base_url": endpoint,
+            "api_key_ref": LLM_KEY_REF,
+            "label": chat,
+            "provider": "azure-openai",
         }
         embed_entry = {
             "api_style": "litellm",
@@ -556,16 +549,11 @@ def build_self_hosted_values(inp, dim):
         "nexus": {
             "configProfiles": "self-hosted",
             "inference": {
-                "llmModels": llm_models,
+                # The one chat model, so every work area's default model seeds from it.
+                "llmModels": {"chat": chat_model},
                 "embeddingModels": embedding_models,
                 "rerankModels": rerank_models,
-                "tiers": {
-                    "lite": "chat-lite",
-                    "standard": "chat-standard",
-                    "pro": "chat-pro",
-                    "embedding": embed,
-                    "rerank": "rerank",
-                },
+                "tiers": {"embedding": embed, "rerank": "rerank"},
                 # Empty stubs; real values are injected at install (never written here).
                 "providerKeys": provider_keys,
             },
