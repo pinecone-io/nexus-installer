@@ -359,7 +359,7 @@ def rerank_catalog_entry(provider, deployment, endpoint):
     if provider == "azure_ai":
         if not endpoint:
             die(
-                "inference.rerankProvider=azure_ai needs inference.rerankEndpoint: the "
+                "inference.rerank.provider=azure_ai needs inference.rerank.endpoint: the "
                 "deployment lives on a host of yours, which litellm cannot guess. Providers "
                 "that publish one endpoint for everyone (cohere, voyage, jina_ai, ...) can "
                 "leave it out."
@@ -611,6 +611,22 @@ def build_self_hosted_values(inp, dim):
         if style not in ("litellm", "openai"):
             die(f"inference.llm.tiers.{tier}.apiStyle must be 'litellm' or 'openai', "
                 f"got {style!r}")
+        if gw and style != "openai":
+            die(
+                f"inference.llm.tiers.{tier}.apiStyle={style!r} is not valid while "
+                "inference.gateway is set. A gateway publishes each deployment under a "
+                "path of its own, which the litellm route rewrites, so the call would "
+                "not reach the gateway's route. Leave apiStyle unset on the tier so it "
+                "uses the openai style the gateway path needs."
+            )
+        if gw and per_tier.get("keyEnv"):
+            die(
+                f"inference.llm.tiers.{tier}.keyEnv is set, but inference.gateway is "
+                "configured and every chat tier authenticates with the gateway's OAuth2 "
+                "credential. The per-tier key would be dropped and that tier would "
+                "quietly share the gateway credential instead. Remove the tier's keyEnv, "
+                "or remove the gateway block if this tier really has its own static key."
+            )
         endpoint = per_tier.get("endpoint", llm_endpoint)
         family = _model_family(inp, "llm", tier)
         # Each tier gets its own key ref only when it names its own env var, so the common
@@ -691,12 +707,12 @@ def build_self_hosted_values(inp, dim):
             sys.stderr.write(
                 "gen-values: note: inference.gateway.coversRerank is on — rerank rides the "
                 "gateway credential (minted, auto-refreshed token) and still POSTs to "
-                "inference.rerankEndpoint. Confirm the gateway actually fronts that rerank route.\n"
+                "the rerank endpoint. Confirm the gateway actually fronts that rerank route.\n"
             )
         else:
             sys.stderr.write(
                 "gen-values: note: inference.gateway applies to chat + embedding only; rerank "
-                "uses inference.rerankEndpoint with its own key. Set inference.gateway.coversRerank: "
+                "uses inference.rerank.endpoint with its own key. Set inference.gateway.coversRerank: "
                 "true to front rerank through the gateway too (token auto-refreshes like chat/embedding).\n"
             )
         cleartext_host = cleartext_token_url_host(gw["token_url"])

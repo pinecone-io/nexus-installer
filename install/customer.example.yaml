@@ -195,7 +195,9 @@ inference:
   #     you supply below.
   #   - their `apiStyle` defaults to openai, since a gateway fronts the deployment under a
   #     path of its own that no registry maps. So state the chat token budgets above —
-  #     nothing looks them up on this path.
+  #     nothing looks them up on this path. A tier that overrides `apiStyle` to litellm,
+  #     or that names its own `keyEnv`, is refused: the first would rewrite the gateway's
+  #     path, the second would be dropped in favour of the gateway credential.
   #   - rerank keeps its own `endpoint` + `keyEnv` by DEFAULT. Set coversRerank: true
   #     (below) to front rerank through the gateway too, so its token auto-refreshes like
   #     chat/embedding (rerank's `keyEnv` then unused). Only if the gateway fronts rerank.

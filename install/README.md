@@ -201,6 +201,11 @@ uncomment the `gateway:` block your `customer.yaml` already carries and:
   scope is refused by the authorization server (Okta answers `400 invalid_scope`), and the
   gateway rejects a call that arrives without `?api-version=`. `gen-values.py` fails rather
   than emit a catalog that cannot work.
+- **Chat tiers all ride the gateway credential.** A tier may still name its own
+  `deployment` and `endpoint`, and `--live-gateway` calls each one. A tier that names its
+  own `keyEnv`, or overrides `apiStyle` to `litellm`, is refused rather than silently
+  ignored — the key would be dropped for the gateway credential, and the litellm route
+  would rewrite the gateway's own path.
 - **Rerank is unaffected**: it keeps `inference.rerank.endpoint` + `inference.rerank.keyEnv`
   and its own static key.
 - Set `inference.llm.contextWindow` / `inference.llm.maxOutputTokens` — this path does not
@@ -274,16 +279,18 @@ halves of the install carry your `staticIndex.id` and `embedding.dimension` — 
 would run, and the index metadata the Nexus services read. A bundle that renders a different
 index, or that gives the two halves different ones, is refused.
 
-Live gateway (`--live-gateway`, opt-in, makes real HTTP calls): mints a token and makes one
-1-token chat completion plus one tiny embedding call through the gateway — see above.
+Live gateway (`--live-gateway`, opt-in, makes real HTTP calls): mints a token, then calls
+every model the gateway fronts — each at the host and deployment its own catalog entry names,
+so three chat tiers on three deployments are three calls — see above.
 
 Live models (`--live-models`, opt-in, makes real HTTP calls): one real call per model in the
 generated catalog, issued by the client that model's `api_style` names — so the probe sends
 what the proxy will send, and a bad key, a wrong endpoint or a misspelled deployment fails in
 seconds. The embedding leg **measures** the returned vector width against the catalog's
 dimension. An entry whose bearer comes from the gateway credential has no static key to call
-with, so the gateway probe stands in for it and runs from here too. Needs the relevant key
-env vars exported, and litellm for the litellm-style legs.
+with, so the gateway probe above covers it and runs from here too; an entry that probe did not
+reach is reported as unproven rather than passed. Needs the relevant key env vars exported,
+and litellm for the litellm-style legs.
 
 ## Terraform hand-off (greenfield) — optional
 

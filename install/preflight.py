@@ -127,6 +127,7 @@ _fails = 0
 _warns = 0
 _skips = 0
 _gateway_probed = False
+_gateway_probed_keys = set()
 
 _gen_dir = None
 
@@ -578,6 +579,8 @@ CREDENTIAL_AUTH_STYLES = ("oauth2_client_credentials",)
 CREDENTIAL_CLIENT_AUTH = frozenset({"basic", "post"})
 CREDENTIAL_REQUIRED = ("auth_style", "token_url", "client_id_ref", "client_secret_ref", "scope")
 REQUIRED_LLM_TIERS = ("lite", "standard", "pro")
+# Must match gen-values.py.
+DEFAULT_SUBSCRIPTION_HEADER = "Ocp-Apim-Subscription-Key"
 # The proxy pins both when the entry names neither.
 DEFAULT_PINECONE_BASE_URL = "https://api.pinecone.io"
 DEFAULT_PINECONE_API_VERSION = "2025-10"
@@ -944,8 +947,8 @@ def _gateway_call_failed(url, status, body):
         )
     elif status == 404:
         fail(
-            f"gateway returned 404 for {url}: {body[:200]}. inference.endpoint must be "
-            "the gateway base up to but NOT including /deployments/, and the "
+            f"gateway returned 404 for {url}: {body[:200]}. The surface's endpoint must "
+            "be the gateway base up to but NOT including /deployments/, and the "
             "deployment name must match the gateway's own route."
         )
     else:
@@ -954,13 +957,14 @@ def _gateway_call_failed(url, status, body):
 
 
 def check_live_gateway(inp):
-    """Mint a token, then make one real chat and one real embedding call through the gateway.
+    """Mint a token, then make one real call per model the gateway fronts.
 
     This is the cheap version of the failure it prevents: a wrong client secret,
     an unauthorized scope or the wrong gateway environment otherwise surfaces as
-    401s from the proxy long after a 25-minute install has finished. Both bodies are
-    shaped the way the inference proxy shapes them, so a green probe is evidence
-    about the traffic the install will actually send.
+    401s from the proxy long after a 25-minute install has finished. Each body is
+    shaped the way the inference proxy shapes it, and each goes to the host and
+    deployment that entry declares, so a green probe is evidence about the traffic
+    the install will actually send.
     """
     global _gateway_probed
     _gateway_probed = True
@@ -1051,110 +1055,198 @@ def check_live_gateway(inp):
     ttl = payload.get("expires_in", "unset")
     ok(f"minted a token (expires_in={ttl}); the proxy refreshes it in-process")
 
-    endpoint = str(inf_cfg(inp, "llm", "endpoint", "inference.endpoint", default="")).rstrip("/")
-    chat = inf_cfg(inp, "llm", "deployment", "inference.chatDeployment")
-    embed = inf_cfg(inp, "embedding", "deployment", "inference.embeddingDeployment")
-    query = f"?api-version={urllib.parse.quote(api_version)}"
-    call_headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {token}",
-    }
     key_env = get(inp, "inference.gateway.subscriptionKeyEnv")
+    subscription_key = ""
     if key_env:
         subscription_key = os.environ.get(key_env, "")
         if not subscription_key:
             fail(f"inference.gateway.subscriptionKeyEnv={key_env!r} is not set in this shell")
             return
-        header = get(inp, "inference.gateway.subscriptionHeader") or "Ocp-Apim-Subscription-Key"
-        call_headers[header] = subscription_key
 
-    # The proxy sends the deployment as `model` and budgets with max_tokens, renaming it
-    # only for a gpt-5-family model. A probe body that differs proves nothing about it.
-    # The budget must cover a reasoning model's internal tokens, which are spent
-    # before any visible output and count against it.
-    family = inf_cfg(inp, "llm", "modelFamily", "inference.modelFamily")
-    budget = "max_completion_tokens" if _is_gpt5_family(chat, family) else "max_tokens"
-    chat_url = f"{endpoint}/deployments/{chat}/chat/completions{query}"
-    base_body = {"model": chat, "messages": [{"role": "user", "content": "ping"}], budget: 512}
-    status, body = _http_post(chat_url, json.dumps(base_body).encode(), call_headers)
+    entries = _gateway_targets(inp)
+    source = "the generated catalog"
+    if not entries:
+        entries = _gateway_entries_from_inputs(inp, api_version)
+        source = "your inputs (no generated overlay to read)"
+    if not entries:
+        fail("the gateway is configured but nothing names a model to probe through it")
+        return
+    ok(f"probing {len(entries)} gateway-fronted model(s) from {source}")
+
+    seen = set()
+    for surface, cid, entry in entries:
+        key = _entry_probe_key(surface, entry)
+        if key in seen:
+            continue
+        seen.add(key)
+        probe = GATEWAY_PROBES.get(surface)
+        if probe is None:
+            warn(f"{surface} '{cid}': rides the gateway credential but --live-gateway has "
+                 "no probe for this surface, so nothing here calls it")
+            continue
+        if probe(f"{surface} '{cid}'", entry, token, subscription_key):
+            _gateway_probed_keys.add(key)
+
+
+def _entry_probe_key(surface, entry):
+    return (surface, entry.get("api_style"), entry.get("model"), entry.get("base_url"))
+
+
+def _gateway_targets(inp):
+    """The generated catalog's entries whose bearer is the OAuth2 credential."""
+    targets, source = _catalog_targets(inp)
+    if source != "generated":
+        return []
+    return [t for t in targets if t[2].get("credential_ref")]
+
+
+def _gateway_entries_from_inputs(inp, api_version):
+    """Stand-ins for the catalog entries when there is no overlay to read, so
+    --only-live-gateway runs the same probes on a bare host."""
+    header_refs = {}
+    header = get(inp, "inference.gateway.subscriptionHeader") or DEFAULT_SUBSCRIPTION_HEADER
+    if get(inp, "inference.gateway.subscriptionKeyEnv"):
+        header_refs = {"extra_header_refs": {header: "gateway-subscription-key"}}
+
+    def deployed(block, key_flat, dep_flat):
+        base = str(inf_cfg(inp, block, "endpoint", *key_flat, default="")).rstrip("/")
+        name = inf_cfg(inp, block, "deployment", dep_flat)
+        return base, name
+
+    out = []
+    base, chat = deployed("llm", ("inference.chatBaseUrl", "inference.endpoint"),
+                          "inference.chatDeployment")
+    if base and chat:
+        family = inf_cfg(inp, "llm", "modelFamily", "inference.modelFamily")
+        out.append(("chat", chat, {
+            "model": chat, "base_url": f"{base}/deployments/{chat}",
+            "api_version": api_version,
+            **({"model_family": family} if family else {}), **header_refs}))
+    base, embed = deployed("embedding", ("inference.embeddingBaseUrl", "inference.endpoint"),
+                           "inference.embeddingDeployment")
+    if base and embed:
+        entry = {"model": embed, "base_url": f"{base}/deployments/{embed}",
+                 "api_version": api_version, **header_refs}
+        catalog_embed = _embedding_entry(inp)
+        if catalog_embed.get("request_dimensions"):
+            entry["request_dimensions"] = True
+            entry["dimension"] = catalog_embed.get("dimension")
+        out.append(("embedding", embed, entry))
+    if get(inp, "inference.gateway.coversRerank"):
+        base, rerank = deployed("rerank", ("inference.rerankEndpoint",),
+                                "inference.rerankDeployment")
+        if base and rerank:
+            # No api_version: a litellm rerank entry carries none, so the proxy sends none.
+            out.append(("rerank", rerank, {"model": rerank,
+                                           "base_url": f"{base}/v2/rerank", **header_refs}))
+        else:
+            fail("inference.gateway.coversRerank is set but the rerank endpoint / "
+                 "deployment is missing, so rerank has no gateway route to probe")
+    return out
+
+
+def _gateway_headers(entry, token, subscription_key):
+    """The entry names a ref, which the install resolves; here the value is this
+    shell's."""
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    for header in entry.get("extra_header_refs") or {}:
+        if subscription_key:
+            headers[header] = subscription_key
+    headers.update(entry.get("extra_headers") or {})
+    return headers
+
+
+def _gateway_url(entry, path=""):
+    base = str(entry.get("base_url") or "").rstrip("/")
+    version = str(entry.get("api_version") or "").strip()
+    query = f"?api-version={urllib.parse.quote(version)}" if version else ""
+    return f"{base}{path}{query}"
+
+
+def _gateway_chat(label, entry, token, subscription_key):
+    """The proxy sends the deployment as `model` and budgets with max_tokens, renaming it
+    only for a gpt-5-family model. A probe body that differs proves nothing about it.
+    The budget must cover a reasoning model's internal tokens, which are spent before any
+    visible output and count against it."""
+    model = entry.get("model")
+    url = _gateway_url(entry, "/chat/completions")
+    headers = _gateway_headers(entry, token, subscription_key)
+    family = entry.get("model_family")
+    budget = "max_completion_tokens" if _is_gpt5_family(model, family) else "max_tokens"
+    base_body = {"model": model, "messages": [{"role": "user", "content": "ping"}], budget: 512}
+    status, body = _http_post(url, json.dumps(base_body).encode(), headers)
     if status == 400 and ("max_tokens" in body or "output limit" in body):
-        ok(f"chat probe hit the model's output limit ({chat_url}, {budget}) — auth and routing proven")
-    elif not _gateway_call_failed(chat_url, status, body):
-        ok(f"chat completion through the gateway succeeded ({chat_url}, {budget})")
+        ok(f"{label}: hit the model's output limit ({url}, {budget}) — auth and routing proven")
+        return True
+    if _gateway_call_failed(url, status, body):
+        return False
+    ok(f"{label}: chat completion through the gateway succeeded ({url}, {budget})")
 
-        def call(extra):
-            probe = dict(base_body, **extra)
-            if extra.get("tools") and _is_gpt5_family(chat, family):
-                probe["reasoning_effort"] = "none"
-            code, text = _http_post(chat_url, json.dumps(probe).encode(), call_headers)
-            try:
-                parsed = json.loads(text)
-            except ValueError:
-                parsed = None
-            return code, text, parsed
+    def call(extra):
+        probe = dict(base_body, **extra)
+        if extra.get("tools") and _is_gpt5_family(model, family):
+            probe["reasoning_effort"] = "none"
+        code, text = _http_post(url, json.dumps(probe).encode(), headers)
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = None
+        return code, text, parsed
 
-        _check_capabilities(f"chat {chat!r} through the gateway", call)
-
-    _check_gateway_embed(inp, endpoint, embed, query, call_headers)
-    _check_gateway_rerank(inp, query, call_headers)
+    _check_capabilities(label, call)
+    return True
 
 
-def _check_gateway_embed(inp, endpoint, embed, query, call_headers):
-    """Its own function so an embed-specific early return (a dropped dimensions
-    field) still leaves the rerank leg to run."""
-    embed_url = f"{endpoint}/deployments/{embed}/embeddings{query}"
-    embed_body = {"model": embed, "input": "ping"}
-    catalog_embed = _embedding_entry(inp)
-    want_dim = catalog_embed.get("dimension") if catalog_embed.get("request_dimensions") else None
+def _gateway_embed(label, entry, token, subscription_key):
+    model = entry.get("model")
+    url = _gateway_url(entry, "/embeddings")
+    headers = _gateway_headers(entry, token, subscription_key)
+    body_obj = {"model": model, "input": "ping"}
+    want_dim = entry.get("dimension") if entry.get("request_dimensions") else None
     if want_dim is not None:
-        embed_body["dimensions"] = want_dim
-    status, body = _http_post(embed_url, json.dumps(embed_body).encode(), call_headers)
-    if _gateway_call_failed(embed_url, status, body):
-        return
-    ok(f"embedding through the gateway succeeded ({embed_url})")
+        body_obj["dimensions"] = want_dim
+    status, body = _http_post(url, json.dumps(body_obj).encode(), headers)
+    if _gateway_call_failed(url, status, body):
+        return False
+    ok(f"{label}: embedding through the gateway succeeded ({url})")
     if want_dim is None:
-        return
+        return True
     try:
         vector = json.loads(body)["data"][0]["embedding"]
     except (ValueError, TypeError, KeyError, IndexError):
-        fail(f"embedding response from {embed_url} carries no data[0].embedding: {body[:200]}")
-        return
+        fail(f"{label}: response from {url} carries no data[0].embedding: {body[:200]}")
+        return True
     if len(vector) == int(want_dim):
-        ok(f"gateway honored dimensions={want_dim} (returned a {len(vector)}-wide vector)")
+        ok(f"{label}: gateway honored dimensions={want_dim} (returned a {len(vector)}-wide vector)")
     else:
         fail(
-            f"asked the gateway for dimensions={want_dim} and got a {len(vector)}-wide "
-            "vector: the request was dropped somewhere on the path, so every embedding "
-            "would be the wrong width for the index. Either the gateway strips the field "
-            "or the deployment cannot emit a narrower width on request — turn "
-            f"request_dimensions off and set the dimension to {len(vector)}."
+            f"{label}: asked the gateway for dimensions={want_dim} and got a "
+            f"{len(vector)}-wide vector: the request was dropped somewhere on the path, so "
+            "every embedding would be the wrong width for the index. Either the gateway "
+            "strips the field or the deployment cannot emit a narrower width on request — "
+            f"turn request_dimensions off and set the dimension to {len(vector)}."
         )
+    return True
 
 
-def _check_gateway_rerank(inp, query, call_headers):
-    """Only meaningful when coversRerank fronts rerank through the gateway; without
-    it rerank uses a static key that never refreshes, the gap this proves gone. The
-    model id travels in the body, so rerankEndpoint stops before /v2/rerank."""
-    if not get(inp, "inference.gateway.coversRerank"):
-        ok("inference.gateway.coversRerank is off; rerank does not ride the gateway, nothing to probe")
-        return
-    rerank_base = str(inf_cfg(inp, "rerank", "endpoint", "inference.rerankEndpoint",
-                          default="")).rstrip("/")
-    rerank = inf_cfg(inp, "rerank", "deployment", "inference.rerankDeployment")
-    if not (rerank_base and rerank):
-        fail(
-            "inference.gateway.coversRerank is set but inference.rerankEndpoint / "
-            "inference.rerankDeployment is missing, so rerank has no gateway route to probe"
-        )
-        return
-    rerank_url = f"{rerank_base}/v2/rerank{query}"
-    payload = json.dumps(
-        {"model": rerank, "query": "ping", "documents": ["ping", "pong"], "top_n": 2}
-    ).encode()
-    status, body = _http_post(rerank_url, payload, call_headers)
-    if _gateway_call_failed(rerank_url, status, body):
-        return
-    ok(f"rerank through the gateway succeeded ({rerank_url})")
+def _gateway_rerank(label, entry, token, subscription_key):
+    if not str(entry.get("base_url") or "").strip():
+        warn(f"{label}: rides the gateway credential but declares no base_url, so there "
+             "is no route to probe")
+        return False
+    url = _gateway_url(entry)
+    headers = _gateway_headers(entry, token, subscription_key)
+    payload = json.dumps({"model": entry.get("model"), "query": "ping",
+                          "documents": ["ping", "pong"], "top_n": 2}).encode()
+    status, body = _http_post(url, payload, headers)
+    if _gateway_call_failed(url, status, body):
+        return False
+    ok(f"{label}: rerank through the gateway succeeded ({url})")
+    return True
+
+
+GATEWAY_PROBES = {"chat": _gateway_chat, "embedding": _gateway_embed,
+                  "rerank": _gateway_rerank}
 
 
 def _http_post(url, data, headers, timeout=20):
@@ -1601,7 +1693,7 @@ def check_live_models(inp):
     seen = set()
     deduped = []
     for surface, cid, entry in targets:
-        key = (surface, entry.get("api_style"), entry.get("model"), entry.get("base_url"))
+        key = _entry_probe_key(surface, entry)
         if key in seen:
             continue
         seen.add(key)
@@ -1614,9 +1706,14 @@ def check_live_models(inp):
         # Dispatch on the credential, not the style: whatever its style, an entry drawing
         # its bearer from the OAuth2 credential has no static key to call with.
         if entry.get("credential_ref"):
-            if _gateway_probed:
+            if _entry_probe_key(surface, entry) in _gateway_probed_keys:
                 ok(f"{label}: draws its bearer from the OAuth2 credential; the gateway "
-                   "probe above called it, capabilities included")
+                   "probe above called this entry, capabilities included")
+            elif _gateway_probed:
+                fail(f"{label}: draws its bearer from the OAuth2 credential, but the "
+                     "gateway probe above did not call it — see the failure it reported "
+                     "for this entry. Nothing here has established that this model "
+                     "answers on the gateway.")
             else:
                 skip(f"{label}: draws its bearer from the OAuth2 credential, which only "
                      "--live-gateway mints, and no gateway probe ran")
