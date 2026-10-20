@@ -172,11 +172,11 @@ configures. The important ones:
   needs `clientId`, the user-assigned managed identity).
 - `registry.base` — the flat base every image and the chart live under; becomes the
   chart's single `global.image.registry` knob.
-- `bundle.tag` — identifies the release. A promoted `oci-stable-<id>` (immutable) runs the
-  whole stack at that one tag — you mirror a single tag per image and every pod visibly runs
-  it; the chart resolves to `0.0.0-bundle.oci-stable-<id>`. Use `oci-stable-latest` for
-  discovery only (it moves — don't pin an install to it). Upgrading is editing this one line
-  (see "Upgrading").
+- `bundle.tag` — identifies the release. Every Nexus image shares the promoted
+  `oci-stable-<id>` (immutable) tag; the FoundationDB and DB images carry their own pinned
+  tag. `image-manifest.sh` lists every image ref to mirror. The chart resolves to
+  `0.0.0-bundle.oci-stable-<id>`. Use `oci-stable-latest` for discovery only (it moves —
+  don't pin an install to it). Upgrading is editing this one line (see "Upgrading").
 
 Secrets never appear here. A `*Env` field names the environment variable that holds the
 secret; the tools read it from your shell and never log it.
