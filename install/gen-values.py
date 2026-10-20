@@ -180,8 +180,8 @@ def build_install_values(inp, dim):
         "registry": req(inp, "registry.base"),
         "pullSecrets": [{"name": opt(inp, "registry.pullSecretName", "acr-pull")}],
     }
-    # An oci-stable-<id> is aliased onto every image, so pin the whole stack to it; a bare
-    # sha keeps the chart's per-image pins.
+    # An oci-stable-<id> sets every Nexus image's tag; FoundationDB and DB images keep their
+    # own pinned tags. A bare sha keeps every per-image pin.
     bundle_tag = str(req(inp, "bundle.tag"))
     if bundle_tag == "oci-stable-latest":
         die("bundle.tag oci-stable-latest is a moving tag (discovery only) — pin an immutable oci-stable-<id> for an install")

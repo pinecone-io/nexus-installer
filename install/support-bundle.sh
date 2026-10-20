@@ -278,7 +278,7 @@ version_block() {
   chart             : ${chart:-$absent}
   chart appVersion  : ${app_version:-unknown}
   release status    : ${status:-unknown}
-  pinned tag (input): $BUNDLE_TAG
+  bundle tag (input): $BUNDLE_TAG
   api image (spec)  : ${image:-unknown}
   version endpoint  : ${endpoint:-not collected — re-run with --exec}
 EOF
