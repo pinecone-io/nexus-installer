@@ -114,9 +114,8 @@ fi
 # Render once, up front: both the dest list and the upstream-repo summary read from it,
 # and templating a multi-subchart bundle is the expensive step. Render against registry.base
 # so image refs already carry the dest prefix.
-# An oci-stable-<id> bundle tag couples every image to that one tag (global.image.tag, as
-# gen-values sets for the install), so the manifest must derive it the same way — else it
-# lists the per-image pins the install won't pull.
+# Set global.image.tag from an oci-stable-<id> bundle tag exactly as gen-values does, else
+# the manifest lists tags the install won't pull.
 TAG_ARGS=()
 case "$BUNDLE_TAG" in oci-stable-*) TAG_ARGS+=(--set "global.image.tag=$BUNDLE_TAG") ;; esac
 RENDERED=$(helm template nexus "$CHART_PATH" \

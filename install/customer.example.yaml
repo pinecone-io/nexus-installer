@@ -44,12 +44,13 @@ registry:
 
 # --- Image bundle ------------------------------------------------------------
 # `tag` selects the release; Pinecone hands you the value — paste it, don't invent it.
-# A promoted oci-stable-<id> (immutable) runs the whole stack at that ONE tag: you mirror a
-# single tag per image and every pod runs it; the chart is 0.0.0-bundle.oci-stable-<id>.
+# A promoted oci-stable-<id> (immutable) is the tag every Nexus image shares; FoundationDB
+# and DB images carry their own pinned tag. image-manifest.sh lists every image ref to
+# mirror. The chart is 0.0.0-bundle.oci-stable-<id>.
 # oci-stable-latest is discovery-only — it moves, so don't pin an install to it.
 # To upgrade, this is the only line you change (see README "Upgrading").
 bundle:
-  tag: oci-stable-<id>                    # [PINECONE] promoted immutable release id (couples the stack); paste what Pinecone gives you
+  tag: oci-stable-<id>                    # [PINECONE] promoted immutable release id; paste what Pinecone gives you
 
 # --- Sizing ------------------------------------------------------------------
 sizing: small                            # [DEFAULT] the only supported class
