@@ -172,7 +172,7 @@ configures. The important ones:
   needs `clientId`, the user-assigned managed identity).
 - `registry.base` — the flat base every image and the chart live under; becomes the
   chart's single `global.image.registry` knob.
-- `bundle.tag` — identifies the release: a release version such as `1.0.0` or `1.1.0-rc.1`
+- `bundle.tag` — identifies the release: a release version such as `0.1.0` or `0.2.0-rc.1`
   (no leading `v`), or a promoted `oci-stable-<id>` (immutable). Every Nexus image shares that
   tag; the FoundationDB and DB images carry their own pinned tag. `image-manifest.sh` lists
   every image ref to mirror. A release version is also the chart version; `oci-stable-<id>`
@@ -389,7 +389,8 @@ to run when the release is not in `deployed` state, when `bundle.tag` is neither
 version nor a promoted `oci-stable-<id>`, or when the index id or dimension differ from what
 the running release serves — each with the reason printed.
 
-Release versions follow SemVer, and a major upgrade (`1.x` → `2.0.0`) is breaking and
+A breaking release bumps the major version, or the minor version while it is `0.x`
+(`0.1.3` → `0.2.0`); a patch bump (`0.1.0` → `0.1.1`) is not breaking. A breaking upgrade is
 one-way. `install.sh --upgrade` refuses one unless you pass `--allow-breaking`, and refuses a
 move to an older version unless you pass `--allow-downgrade`; it reads the running version
 from the last deployed revision in `helm history`, and when it cannot, it refuses unless one of

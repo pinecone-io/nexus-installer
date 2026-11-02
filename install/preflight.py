@@ -56,8 +56,8 @@ UPGRADE checks (--upgrade, shells out to helm/kubectl against the live release):
   - the release exists and is in `deployed` state.
   - bundle.tag is a release version (X.Y.Z, X.Y.Z-rc.N) or a promoted oci-stable-<id>.
   - the move from the last deployed revision is not a downgrade (--allow-downgrade) and not a
-    major upgrade between two release versions (--allow-breaking); an unreadable running
-    version fails unless one of the two is given.
+    breaking upgrade between two release versions — a major bump, or a minor bump in 0.x
+    (--allow-breaking); an unreadable running version fails unless one of the two is given.
   - the index id and dimension in the inputs equal the ones the running release was
     installed with (helm values) and the ones the running data plane serves (docs-api env).
 
@@ -2104,7 +2104,7 @@ def upgrade_verdict(running, target, allow_downgrade=False, allow_breaking=False
                              "allowed by --allow-downgrade/--allow-breaking")]
         return [("fail", (
             f"the running chart version {seen}, so the move to {target} cannot be checked "
-            "for a downgrade or a major upgrade. Confirm the running version with "
+            "for a downgrade or a breaking upgrade. Confirm the running version with "
             f"`helm history {RELEASE} -n {NAMESPACE}`, then re-run with --allow-downgrade or "
             "--allow-breaking as it applies."
         ))]
@@ -2118,13 +2118,14 @@ def upgrade_verdict(running, target, allow_downgrade=False, allow_breaking=False
                 f"migrations back, so it is safe only if {target} reads everything {running} "
                 "wrote; confirm that in the release notes, then re-run with --allow-downgrade."
             )))
-    if not (r_legacy or t_legacy) and t[0] > r[0]:
+    if not (r_legacy or t_legacy) and (t[0] > r[0] or (t[0] == r[0] == 0 and t[1] > r[1])):
         if allow_breaking:
-            out.append(("warn", f"major upgrade {running} -> {target}, allowed by --allow-breaking"))
+            out.append(("warn", f"breaking upgrade {running} -> {target}, allowed by --allow-breaking"))
         else:
             out.append(("fail", (
-                f"{running} -> {target} is a major upgrade: it is one-way and may change stored "
-                f"data. Read the release notes for {target}, then re-run with --allow-breaking."
+                f"{running} -> {target} is a breaking upgrade (a major bump, or a minor bump in "
+                "0.x): it is one-way and may change stored data. Read the release notes for "
+                f"{target}, then re-run with --allow-breaking."
             )))
     return out or [("ok", f"upgrade {running} -> {target}")]
 
@@ -2580,6 +2581,21 @@ def self_test():
     alias_a, alias_b = "0.0.0-bundle.oci-stable-a", "0.0.0-bundle.oci-stable-b"
     cases = [
         ("1.0.0", "1.0.0", {}, ["ok"]),
+        ("0.1.0", "0.1.0", {}, ["ok"]),
+        (alias_a, "0.2.0-rc.1", {}, ["ok"]),
+        ("0.1.0", "0.1.1", {}, ["ok"]),
+        ("0.1.1-rc.1", "0.1.1", {}, ["ok"]),
+        ("0.2.0-rc.1", "0.2.0", {}, ["ok"]),
+        ("0.2.0-rc.1", "0.2.0-rc.2", {}, ["ok"]),
+        ("0.1.3", "0.2.0", {}, ["fail"]),
+        ("0.1.3", "0.2.0-rc.1", {}, ["fail"]),
+        ("0.1.3", "0.2.0", {"allow_downgrade": True}, ["fail"]),
+        ("0.1.3", "0.2.0", {"allow_breaking": True}, ["warn"]),
+        ("0.9.4", "1.0.0", {}, ["fail"]),
+        ("0.2.0", "0.1.3", {}, ["fail"]),
+        ("0.2.0", "0.1.3", {"allow_downgrade": True}, ["warn"]),
+        ("0.1.1", "0.1.1-rc.1", {}, ["fail"]),
+        ("0.1.0", alias_a, {}, ["fail"]),
         (alias_a, alias_a, {}, ["ok"]),
         (alias_b, alias_a, {}, ["ok"]),
         (alias_a, "1.0.0", {}, ["ok"]),
@@ -2636,7 +2652,7 @@ def main():
     ap.add_argument("--allow-downgrade", action="store_true",
                     help="with --upgrade, accept a bundle older than the running release")
     ap.add_argument("--allow-breaking", action="store_true",
-                    help="with --upgrade, accept a major upgrade between two release versions")
+                    help="with --upgrade, accept a breaking upgrade (a major bump, or a minor bump in 0.x)")
     ap.add_argument("--self-test", action="store_true", help="verify the version rules and exit")
     ap.add_argument("--live-gateway", action="store_true",
                     help="also mint a gateway token and make one real chat + embedding "

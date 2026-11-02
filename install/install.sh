@@ -9,8 +9,8 @@
 # --upgrade re-applies the generated values to the existing release, reusing (never
 # minting) the release credentials. Its dry-run is always server-side, and a real
 # upgrade runs one first. It refuses a bundle older than the running release unless
-# --allow-downgrade is given, and a major upgrade between two release versions unless
-# --allow-breaking is given.
+# --allow-downgrade is given, and a breaking upgrade (a major bump, or a minor bump in 0.x)
+# unless --allow-breaking is given.
 #
 # Re-runnable: the two generated release credentials are persisted (0600) to
 # install/.secrets.env on first run and reused, so re-installs keep stable creds.

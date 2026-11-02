@@ -44,7 +44,7 @@ registry:
 
 # --- Image bundle ------------------------------------------------------------
 # `tag` selects the release; Pinecone hands you the value — paste it, don't invent it.
-# A release version (1.0.0, 1.1.0-rc.1 — no leading v) or a promoted oci-stable-<id> (immutable)
+# A release version (0.1.0, 0.2.0-rc.1 — no leading v) or a promoted oci-stable-<id> (immutable)
 # is the tag every Nexus image shares; FoundationDB and DB images carry their own pinned tag.
 # image-manifest.sh lists every image ref to mirror. A release version is also the chart
 # version; oci-stable-<id> is chart 0.0.0-bundle.oci-stable-<id>.
