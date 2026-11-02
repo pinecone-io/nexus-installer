@@ -263,8 +263,8 @@ probe_version_line() {
   tr -d '\r' < "$BUNDLE/probes/version.txt" | awk '/^\{/ { print; exit }' || true
 }
 
-# `bundle.tag` is the alias the customer pinned in the inputs and can be re-pointed at a
-# different build, so it never stands in for the built id the chart carries. The image is
+# `bundle.tag` is what the customer pinned in the inputs; an oci-stable alias can be re-pointed
+# at a different build, so it never stands in for the built id the chart carries. The image is
 # the Deployment's, so it is what the release asks for, not necessarily what is running.
 version_block() {
   local chart app_version status image endpoint absent="unknown — helm release data not collected"

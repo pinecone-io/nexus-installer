@@ -172,11 +172,12 @@ configures. The important ones:
   needs `clientId`, the user-assigned managed identity).
 - `registry.base` — the flat base every image and the chart live under; becomes the
   chart's single `global.image.registry` knob.
-- `bundle.tag` — identifies the release. Every Nexus image shares the promoted
-  `oci-stable-<id>` (immutable) tag; the FoundationDB and DB images carry their own pinned
-  tag. `image-manifest.sh` lists every image ref to mirror. The chart resolves to
-  `0.0.0-bundle.oci-stable-<id>`. Use `oci-stable-latest` for discovery only (it moves —
-  don't pin an install to it). Upgrading is editing this one line (see "Upgrading").
+- `bundle.tag` — identifies the release: a release version such as `1.0.0` or `1.1.0-rc.1`
+  (no leading `v`), or a promoted `oci-stable-<id>` (immutable). Every Nexus image shares that
+  tag; the FoundationDB and DB images carry their own pinned tag. `image-manifest.sh` lists
+  every image ref to mirror. A release version is also the chart version; `oci-stable-<id>`
+  resolves to chart `0.0.0-bundle.oci-stable-<id>`. Use `oci-stable-latest` for discovery only
+  (it moves — don't pin an install to it). Upgrading is editing this one line (see "Upgrading").
 
 Secrets never appear here. A `*Env` field names the environment variable that holds the
 secret; the tools read it from your shell and never log it.
@@ -270,9 +271,10 @@ Live (`--live`, opt-in, needs `az`/`kubectl` + the `azure.*` inputs):
   credential covers the release service account.
 
 Upgrade (`--upgrade`, run by `install.sh --upgrade`, needs `helm`/`kubectl` access to the
-release): the release exists and is `deployed`, `bundle.tag` is a promoted `oci-stable-<id>`,
-and the index id and dimension in your inputs equal the ones the running release was
-installed with and serves.
+release): the release exists and is `deployed`, `bundle.tag` is a release version or a
+promoted `oci-stable-<id>`, the move is neither a downgrade nor a breaking version jump
+(unless allowed, see "Upgrading"), and the index id and dimension in your inputs equal the
+ones the running release was installed with and serves.
 
 Before anything is applied, `install.sh` also renders the resolved chart and checks that both
 halves of the install carry your `staticIndex.id` and `embedding.dimension` — the data plane it
@@ -370,7 +372,7 @@ in particular `staticIndex.id` and `embedding.dimension`, which the running inde
 to and which an upgrade cannot change.
 
 ```bash
-$EDITOR customer.yaml                      # bundle.tag: the new oci-stable-<id> Pinecone gives you
+$EDITOR customer.yaml                      # bundle.tag: the new release Pinecone gives you
 python3 gen-values.py                      # regenerate inputs for the new bundle
 ./image-manifest.sh --copy --source <Pinecone source registry> --chart-path /path/to/chart   # mirror the new bundle, as in Quick start step 3
 ./image-manifest.sh --list                 # confirm it resolves from your registry
@@ -383,9 +385,16 @@ python3 gen-values.py                      # regenerate inputs for the new bundl
 provider keys must be exported in your shell exactly as for the install (it checks their
 names up front). The release credentials are the ones already in `.secrets.env`; if that
 file is gone, the script recovers them from the release and rewrites the file. It refuses
-to run when the release is not in `deployed` state, when `bundle.tag` is not a promoted
-`oci-stable-<id>`, or when the index id or dimension differ from what the running release
-serves — each with the reason printed.
+to run when the release is not in `deployed` state, when `bundle.tag` is neither a release
+version nor a promoted `oci-stable-<id>`, or when the index id or dimension differ from what
+the running release serves — each with the reason printed.
+
+Release versions follow SemVer, and a major upgrade (`1.x` → `2.0.0`) is breaking and
+one-way. `install.sh --upgrade` refuses one unless you pass `--allow-breaking`, and refuses a
+move to an older version unless you pass `--allow-downgrade`; it reads the running version
+from the last deployed revision in `helm history`, and when it cannot, it refuses unless one of
+the two is given. Read the release notes before passing either. Moving from an
+`oci-stable-<id>` to any release version is a plain upgrade; the reverse is a downgrade.
 
 Expect roughly two minutes during which the API does not answer while the pods roll to the
 new images; sessions and data are unaffected. Verify the upgrade by the images the pods run:

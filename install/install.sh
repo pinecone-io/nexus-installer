@@ -8,14 +8,16 @@
 #
 # --upgrade re-applies the generated values to the existing release, reusing (never
 # minting) the release credentials. Its dry-run is always server-side, and a real
-# upgrade runs one first.
+# upgrade runs one first. It refuses a bundle older than the running release unless
+# --allow-downgrade is given, and a major upgrade between two release versions unless
+# --allow-breaking is given.
 #
 # Re-runnable: the two generated release credentials are persisted (0600) to
 # install/.secrets.env on first run and reused, so re-installs keep stable creds.
 #
 # Usage:
-#   ./install.sh [--upgrade] [--dry-run[=client|server]] [-f customer.yaml]
-#                [--extra-values FILE] [--yes] [--debug]
+#   ./install.sh [--upgrade [--allow-downgrade] [--allow-breaking]] [--dry-run[=client|server]]
+#                [-f customer.yaml] [--extra-values FILE] [--yes] [--debug]
 #
 # --extra-values layers one more values file after the generated overlays (and before
 # the secret file, which must stay last). It is an escape hatch for a target the inputs
@@ -28,6 +30,7 @@ DRY_RUN=0
 DRY_RUN_MODE=""         # client = offline helm template; server = validate against the cluster API
 UPGRADE=0
 EXTRA_VALUES=""
+ALLOW_ARGS=()
 ASSUME_YES=0
 DEBUG=0
 
@@ -37,6 +40,7 @@ while [ $# -gt 0 ]; do
     --dry-run=*) DRY_RUN=1; DRY_RUN_MODE="${1#*=}" ;;
     --upgrade) UPGRADE=1 ;;
     --extra-values) EXTRA_VALUES="$2"; shift ;;
+    --allow-downgrade|--allow-breaking) ALLOW_ARGS+=("$1") ;;
     -f|--inputs) INPUTS_FILE="$2"; shift ;;
     --yes|-y) ASSUME_YES=1 ;;
     --debug) DEBUG=1 ;;
@@ -46,6 +50,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$DRY_RUN_MODE" in ""|client|server) ;; *) die "--dry-run mode must be 'client' or 'server', got '$DRY_RUN_MODE'" ;; esac
+[ "$UPGRADE" = 1 ] || [ ${#ALLOW_ARGS[@]} -eq 0 ] || die "${ALLOW_ARGS[0]} only applies with --upgrade"
 if [ "$UPGRADE" = 1 ]; then
   [ "$DRY_RUN_MODE" != "client" ] || die "--upgrade --dry-run is server-side (it compares against the live release); drop '=client'"
   DRY_RUN_MODE="server"
@@ -73,7 +78,7 @@ load_inputs_env
 PREFLIGHT_ARGS=()
 if [ "$UPGRADE" = 1 ]; then
   log "running static + upgrade preflight"
-  PREFLIGHT_ARGS=(--upgrade)
+  PREFLIGHT_ARGS=(--upgrade "${ALLOW_ARGS[@]}")
 else
   log "running static preflight"
 fi

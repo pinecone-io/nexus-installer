@@ -37,6 +37,8 @@ except ModuleNotFoundError:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+from preflight import bundle_image_tag, bundle_tag_error, chart_version  # noqa: E402
+
 # The seven container suffixes are a fixed product contract (see
 # terraform/aks-slim/modules/storage-identity/main.tf). The stem supplies the rest.
 CONTAINER_SUFFIXES = [
@@ -174,19 +176,25 @@ def _tier_key_envs(inp):
     return out
 
 
+def bundle_tag(inp):
+    tag = str(req(inp, "bundle.tag"))
+    error = bundle_tag_error(tag)
+    if error:
+        die(error)
+    return tag
+
+
 def build_install_values(inp, dim):
     idx_id = req(inp, "staticIndex.id")
     image = {
         "registry": req(inp, "registry.base"),
         "pullSecrets": [{"name": opt(inp, "registry.pullSecretName", "acr-pull")}],
     }
-    # An oci-stable-<id> sets every Nexus image's tag; FoundationDB and DB images keep their
-    # own pinned tags. A bare sha keeps every per-image pin.
-    bundle_tag = str(req(inp, "bundle.tag"))
-    if bundle_tag == "oci-stable-latest":
-        die("bundle.tag oci-stable-latest is a moving tag (discovery only) — pin an immutable oci-stable-<id> for an install")
-    if bundle_tag.startswith("oci-stable-"):
-        image["tag"] = bundle_tag
+    # A release version or oci-stable-<id> sets every Nexus image's tag; FoundationDB and DB
+    # images keep their own pinned tags. A bare sha keeps every per-image pin.
+    image_tag = bundle_image_tag(bundle_tag(inp))
+    if image_tag:
+        image["tag"] = image_tag
     static_index = {
         "id": idx_id,
         "name": opt(inp, "staticIndex.name", "nexus-hybrid"),
@@ -773,6 +781,7 @@ def build_inputs_env(inp, dim, outdir):
     # Not required under coversRerank — rerank uses the gateway credential, not this key.
     gw = gateway_spec(inp)
     rerank_gatewayed = bool(gw and gw["covers_rerank"])
+    tag = bundle_tag(inp)
     env = {
         "KUBE_CONTEXT": req(inp, "kubeContext"),
         "REGISTRY_BASE": req(inp, "registry.base"),
@@ -780,8 +789,8 @@ def build_inputs_env(inp, dim, outdir):
         "REGISTRY_USERNAME": req(inp, "registry.username"),
         "REGISTRY_PASSWORD_ENV": req(inp, "registry.passwordEnv"),
         "PULL_SECRET_NAME": opt(inp, "registry.pullSecretName", "acr-pull"),
-        "BUNDLE_TAG": str(req(inp, "bundle.tag")),
-        "CHART_VERSION": f"0.0.0-bundle.{req(inp, 'bundle.tag')}",
+        "BUNDLE_TAG": tag,
+        "CHART_VERSION": chart_version(tag),
         "RERANK_KEY_ENV": (_cfg(inp, "rerank", "keyEnv", "inference.rerankKeyEnv", default="")
                            if rerank_gatewayed
                            else _require_key_env(inp, "rerank", "inference.rerankKeyEnv")),
