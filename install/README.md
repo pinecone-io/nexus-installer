@@ -273,7 +273,7 @@ Live (`--live`, opt-in, needs `az`/`kubectl` + the `azure.*` inputs):
 Upgrade (`--upgrade`, run by `install.sh --upgrade`, needs `helm`/`kubectl` access to the
 release): the release exists and is `deployed`, `bundle.tag` is a release version or a
 promoted `oci-stable-<id>`, the move is neither a downgrade nor a breaking version jump
-(unless allowed, see "Upgrading"), and the index id and dimension in your inputs equal the
+(unless allowed; a move to an `oci-stable-<id>` is not version-checked, see "Upgrading"), and the index id and dimension in your inputs equal the
 ones the running release was installed with and serves.
 
 Before anything is applied, `install.sh` also renders the resolved chart and checks that both
@@ -393,9 +393,12 @@ A breaking release bumps the major version, or the minor version while it is `0.
 (`0.1.3` → `0.2.0`); a patch bump (`0.1.0` → `0.1.1`) is not breaking. A breaking upgrade is
 one-way. `install.sh --upgrade` refuses one unless you pass `--allow-breaking`, and refuses a
 move to an older version unless you pass `--allow-downgrade`; it reads the running version
-from the last deployed revision in `helm history`, and when it cannot, it refuses unless one of
-the two is given. Read the release notes before passing either. Moving from an
-`oci-stable-<id>` to any release version is a plain upgrade; the reverse is a downgrade.
+from the last deployed revision in `helm history`, and when it cannot, it refuses a release
+version target unless one of the two is given. Read the release notes before passing either. Moving from an
+`oci-stable-<id>` to any release version, or to another `oci-stable-<id>`, is a plain
+upgrade. `oci-stable-<id>` bundles are not version-ordered, so a move to one from a release
+version, or from a running version that cannot be read, is never refused; preflight prints
+a warning and proceeds.
 
 Expect roughly two minutes during which the API does not answer while the pods roll to the
 new images; sessions and data are unaffected. Verify the upgrade by the images the pods run:

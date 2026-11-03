@@ -8,7 +8,7 @@
 #
 # --upgrade re-applies the generated values to the existing release, reusing (never
 # minting) the release credentials. Its dry-run is always server-side, and a real
-# upgrade runs one first. It refuses a bundle older than the running release unless
+# upgrade runs one first. It refuses a release version older than the running one unless
 # --allow-downgrade is given, and a breaking upgrade (a major bump, or a minor bump in 0.x)
 # unless --allow-breaking is given.
 #

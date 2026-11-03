@@ -58,6 +58,8 @@ UPGRADE checks (--upgrade, shells out to helm/kubectl against the live release):
   - the move from the last deployed revision is not a downgrade (--allow-downgrade) and not a
     breaking upgrade between two release versions — a major bump, or a minor bump in 0.x
     (--allow-breaking); an unreadable running version fails unless one of the two is given.
+    An oci-stable-<id> target is not version-ordered: from a release version or an
+    unreadable one it WARNs and is not checked.
   - the index id and dimension in the inputs equal the ones the running release was
     installed with (helm values) and the ones the running data plane serves (docs-api env).
 
@@ -2093,11 +2095,15 @@ def deployed_chart_version(history):
 def upgrade_verdict(running, target, allow_downgrade=False, allow_breaking=False):
     if running == target:
         return [("ok", f"chart {target} is already running — configuration-only upgrade, same images")]
-    r_legacy, t_legacy = (str(v or "").startswith(LEGACY_CHART_PREFIX) for v in (running, target))
-    if r_legacy and t_legacy:
-        return [("ok", f"running {running} -> {target}")]
+    r_legacy = str(running or "").startswith(LEGACY_CHART_PREFIX)
+    if str(target).startswith(LEGACY_CHART_PREFIX):
+        if r_legacy:
+            return [("ok", f"running {running} -> {target}")]
+        return [("warn", f"{target} is an oci-stable bundle; those are not version-ordered, so the move "
+                         f"from {running or 'an unread version'} is not checked for a downgrade or a "
+                         "breaking upgrade")]
     r, t = parse_version(running), parse_version(target)
-    if (r is None and not r_legacy) or (t is None and not t_legacy):
+    if (r is None and not r_legacy) or t is None:
         seen = f"is {running}" if running else "could not be read from helm history"
         if allow_downgrade or allow_breaking:
             return [("warn", f"the running chart version {seen}; moving to {target} unchecked, "
@@ -2109,7 +2115,7 @@ def upgrade_verdict(running, target, allow_downgrade=False, allow_breaking=False
             "--allow-breaking as it applies."
         ))]
     out = []
-    if t_legacy or (not r_legacy and version_key(t) < version_key(r)):
+    if not r_legacy and version_key(t) < version_key(r):
         if allow_downgrade:
             out.append(("warn", f"downgrade {running} -> {target}, allowed by --allow-downgrade"))
         else:
@@ -2118,7 +2124,7 @@ def upgrade_verdict(running, target, allow_downgrade=False, allow_breaking=False
                 f"migrations back, so it is safe only if {target} reads everything {running} "
                 "wrote; confirm that in the release notes, then re-run with --allow-downgrade."
             )))
-    if not (r_legacy or t_legacy) and (t[0] > r[0] or (t[0] == r[0] == 0 and t[1] > r[1])):
+    if not r_legacy and (t[0] > r[0] or (t[0] == r[0] == 0 and t[1] > r[1])):
         if allow_breaking:
             out.append(("warn", f"breaking upgrade {running} -> {target}, allowed by --allow-breaking"))
         else:
@@ -2595,9 +2601,11 @@ def self_test():
         ("0.2.0", "0.1.3", {}, ["fail"]),
         ("0.2.0", "0.1.3", {"allow_downgrade": True}, ["warn"]),
         ("0.1.1", "0.1.1-rc.1", {}, ["fail"]),
-        ("0.1.0", alias_a, {}, ["fail"]),
+        ("0.1.0", alias_a, {}, ["warn"]),
         (alias_a, alias_a, {}, ["ok"]),
         (alias_b, alias_a, {}, ["ok"]),
+        (alias_b, alias_a, {"allow_downgrade": True}, ["ok"]),
+        ("0.0.0-bundle.main-abc1234", alias_a, {}, ["ok"]),
         (alias_a, "1.0.0", {}, ["ok"]),
         (alias_a, "1.0.0-rc.1", {}, ["ok"]),
         (alias_a, "2.3.0", {}, ["ok"]),
@@ -2610,7 +2618,8 @@ def self_test():
         ("1.0.3", "1.0.0", {}, ["fail"]),
         ("1.0.3", "1.0.0", {"allow_downgrade": True}, ["warn"]),
         ("1.0.0", "1.0.0-rc.2", {}, ["fail"]),
-        ("1.0.0", alias_a, {}, ["fail"]),
+        ("1.0.0", alias_a, {}, ["warn"]),
+        ("2.1.0", alias_a, {"allow_breaking": True}, ["warn"]),
         ("1.0.0", alias_a, {"allow_downgrade": True}, ["warn"]),
         ("2.1.0", "1.5.0", {}, ["fail"]),
         ("2.1.0", "1.5.0", {"allow_downgrade": True}, ["warn"]),
@@ -2620,7 +2629,8 @@ def self_test():
         ("1.2.0", "2.0.0", {"allow_breaking": True}, ["warn"]),
         ("2.0.0-rc.1", "2.0.0", {}, ["ok"]),
         (None, "1.0.0", {}, ["fail"]),
-        (None, alias_a, {}, ["fail"]),
+        (None, alias_a, {}, ["warn"]),
+        ("1.0.0+abc", alias_a, {}, ["warn"]),
         (None, "1.0.0", {"allow_downgrade": True}, ["warn"]),
         (None, "1.0.0", {"allow_breaking": True}, ["warn"]),
         ("1.0.0+abc", "1.0.0", {}, ["fail"]),
