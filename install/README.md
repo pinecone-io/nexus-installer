@@ -167,6 +167,10 @@ configures. The important ones:
   re-mint (needs a bundle whose proxy honors the dimensions request).
 - `sizing` — the stack's footprint, emitted as `global.sizing`. Only `small` is
   supported.
+- `architecture` — `standalone` or `ha`, emitted as `global.architecture` only when set;
+  unset leaves the chart default (`standalone`). `install.sh` refuses `ha` unless the
+  bundle's chart declares it in its values schema; the chart then validates the rest of
+  the topology at render. `--extra-values` cannot set `global.architecture`.
 - `storage.containerPrefix` — the stem the seven container names derive from.
 - `storage.auth` — `shared_key` (an account-key Secret) or `workload_identity` (keyless;
   needs `clientId`, the user-assigned managed identity).

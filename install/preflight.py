@@ -23,6 +23,7 @@ STATIC checks (default, values-only, no cloud access):
   - workload_identity: clientId set. shared_key: existingSecret set.
   - security: WARN when the NetworkPolicy enforcement check is turned off.
   - sizing: a supported size class.
+  - architecture: standalone or ha.
   - no leftover example/placeholder values (an `acme` token, an unfilled <...>, or a
     [YOURS] field still equal to customer.example.yaml).
 
@@ -118,6 +119,7 @@ BLOB_SERVICE_ACCOUNTS = [
 ]
 
 SIZING_CLASSES = ("small",)
+ARCHITECTURES = ("standalone", "ha")
 
 GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
 if not sys.stdout.isatty():
@@ -1892,6 +1894,48 @@ def check_sizing(inp):
         ok(f"sizing = {s}")
 
 
+def check_architecture(inp):
+    section("Architecture")
+    a = get(inp, "architecture")
+    if a is None:
+        ok("architecture unset (the chart's default, standalone)")
+    elif str(a) not in ARCHITECTURES:
+        fail(f"architecture={a!r} is not supported. Supported: {', '.join(ARCHITECTURES)}")
+    else:
+        ok(f"architecture = {a}")
+
+
+def chart_architecture_error(chart_dir, arch):
+    path = os.path.join(chart_dir, "values.schema.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            schema = json.load(f)
+    except (OSError, ValueError) as e:
+        return f"cannot read the chart's values schema ({path}): {e}"
+    prop = (((schema.get("properties") or {}).get("global") or {}).get("properties") or {}).get("architecture")
+    if not isinstance(prop, dict):
+        return (f"this bundle's chart has no global.architecture setting, so architecture={arch} "
+                "would install a standalone cell. Use a bundle that supports it, or remove "
+                "`architecture` from customer.yaml.")
+    if arch not in (prop.get("enum") or []):
+        return (f"this bundle's chart does not accept global.architecture={arch} "
+                f"(supported: {', '.join(map(str, prop.get('enum') or []))}).")
+    return None
+
+
+def extra_values_architecture_error(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError) as e:
+        return f"cannot read --extra-values {path}: {e}"
+    g = doc.get("global") if isinstance(doc, dict) else None
+    if isinstance(g, dict) and "architecture" in g:
+        return (f"--extra-values {path} sets global.architecture; set `architecture` in "
+                "customer.yaml instead, so install.sh can check the chart supports it.")
+    return None
+
+
 def check_buckets_s3(inp):
     section("S3 buckets")
     prefix = get(inp, "storage.bucketPrefix")
@@ -2476,6 +2520,7 @@ def main():
             check_storage_auth(inp)
         check_security(inp)
         check_sizing(inp)
+        check_architecture(inp)
         check_placeholders(inp)
         if args.live:
             check_live(inp)

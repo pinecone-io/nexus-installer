@@ -77,6 +77,7 @@ GATEWAY_SUBSCRIPTION_KEY_REF = "gateway-subscription-key"
 DEFAULT_SUBSCRIPTION_HEADER = "Ocp-Apim-Subscription-Key"
 
 SIZING_CLASSES = ("small",)
+ARCHITECTURES = ("standalone", "ha")
 
 
 def die(msg):
@@ -124,6 +125,15 @@ def sizing(inp):
         die(f"sizing={s!r} is not a supported size class. "
             f"Supported: {', '.join(SIZING_CLASSES)}")
     return s
+
+
+def architecture(inp):
+    a = opt(inp, "architecture")
+    if a is None:
+        return None
+    if str(a) not in ARCHITECTURES:
+        die(f"architecture={a!r} is not supported. Supported: {', '.join(ARCHITECTURES)}")
+    return str(a)
 
 
 def storage_provider(inp):
@@ -207,6 +217,10 @@ def build_install_values(inp, dim):
             }
         },
     }
+
+    arch = architecture(inp)
+    if arch:
+        values["global"]["architecture"] = arch
 
     host_url = opt(inp, "host.url", "")
     ingress_on = bool(opt(inp, "ingress.enabled", False))
@@ -786,6 +800,7 @@ def build_inputs_env(inp, dim, outdir):
                            if rerank_gatewayed
                            else _require_key_env(inp, "rerank", "inference.rerankKeyEnv")),
         "RERANK_KEY_REF": RERANK_KEY_REF,
+        "ARCHITECTURE": architecture(inp) or "",
         "STATIC_INDEX_ID": idx_id,
         "EMBED_DIMENSION": str(dim),
         "NAMESPACE": "nexus",
