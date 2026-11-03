@@ -145,15 +145,22 @@ log "4/6 curate OK (chunks_created=$(printf '%s' "$BODY" | jq -r '.output.delta.
 # --- 5. retrieval-only query -------------------------------------------------
 # Chat can ground on a fetched source file, so a cited answer alone can mask a
 # dead index; assert retrieval itself returns hits.
-RQID="$(api POST /api/query -H 'Content-Type: application/json' \
-  -d "{\"ask\":\"What is the Larkspur Line ticket price?\",\"scope\":[\"$SLUG\"],\"retrieval_only\":true,\"background\":true}" \
-  | jq -r '.id // empty')"
-[ -n "$RQID" ] || die "retrieval query was not accepted"
-BODY="$(poll "/api/queries/$RQID" status '^completed$' '^(failed|error|cancelled)$' 120)" \
-  || die "retrieval query did not complete"
-HITS="$(printf '%s' "$BODY" | jq -r '.rollup.total_hits // 0')"
-[ "$HITS" -ge 1 ] \
-  || die "retrieval returned 0 hits — the semantic index is not serving results (db-slim slab-serving / pc-lease); chat can still answer via file fetch, so this is a real failure."
+# A freshly curated record can take a few seconds to become searchable.
+for attempt in 1 2 3; do
+  RQID="$(api POST /api/query -H 'Content-Type: application/json' \
+    -d "{\"ask\":\"What is the Larkspur Line ticket price?\",\"scope\":[\"$SLUG\"],\"retrieval_only\":true,\"background\":true}" \
+    | jq -r '.id // empty')"
+  [ -n "$RQID" ] || die "retrieval query was not accepted"
+  BODY="$(poll "/api/queries/$RQID" status '^completed$' '^(failed|error|cancelled)$' 120)" \
+    || die "retrieval query did not complete"
+  HITS="$(printf '%s' "$BODY" | jq -r '.rollup.total_hits // 0')"
+  [[ "$HITS" =~ ^[0-9]+$ ]] || die "retrieval completed without a hit count"
+  [ "$HITS" -ge 1 ] && break
+  [ "$attempt" -lt 3 ] \
+    || die "retrieval returned 0 hits — the semantic index is not serving results (db-slim slab-serving / pc-lease); chat can still answer via file fetch, so this is a real failure."
+  log "5/6 retrieval returned 0 hits, retrying in 10s ($attempt/3)"
+  sleep 10
+done
 log "5/6 retrieval OK (total_hits=$HITS)"
 
 # --- 6. chat query -----------------------------------------------------------
