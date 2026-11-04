@@ -54,14 +54,20 @@ LIVE checks (--live, opt-in, shells out to az/kubectl):
 
 UPGRADE checks (--upgrade, shells out to helm/kubectl against the live release):
   - the release exists and is in `deployed` state.
-  - bundle.tag is a promoted oci-stable-<id>.
+  - bundle.tag is a release version (X.Y.Z, X.Y.Z-rc.N) or a promoted oci-stable-<id>.
+  - the move from the last deployed revision is not a downgrade (--allow-downgrade) and not a
+    breaking upgrade between two release versions — a major bump, or a minor bump in 0.x
+    (--allow-breaking); an unreadable running version fails unless one of the two is given.
+    An oci-stable-<id> target is not version-ordered: from a release version or an
+    unreadable one it WARNs and is not checked.
   - the index id and dimension in the inputs equal the ones the running release was
     installed with (helm values) and the ones the running data plane serves (docs-api env).
 
 Exit 0 only if no check FAILs. WARN and SKIP never fail the run, but a SKIP means the
 check did not run at all, so the summary reports those separately.
 
-Usage: python3 preflight.py [-f customer.yaml] [--live] [--upgrade]
+Usage: python3 preflight.py [-f customer.yaml] [--live] [--upgrade [--allow-downgrade] [--allow-breaking]]
+       python3 preflight.py --self-test
 """
 import argparse
 import base64
@@ -2029,6 +2035,106 @@ def check_placeholders(inp):
 RELEASE = "nexus"
 NAMESPACE = "nexus"
 
+RELEASE_VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-rc\.(0|[1-9][0-9]*))?")
+LEGACY_CHART_PREFIX = "0.0.0-bundle."
+CHART_NAME = "nexus-installer"
+
+
+def parse_version(version):
+    m = RELEASE_VERSION.fullmatch(version or "")
+    if not m:
+        return None
+    rc = m.group(4)
+    return int(m.group(1)), int(m.group(2)), int(m.group(3)), None if rc is None else int(rc)
+
+
+def version_key(parsed):
+    """A release outranks its own release candidates."""
+    major, minor, patch, rc = parsed
+    return major, minor, patch, rc is None, rc or 0
+
+
+def chart_version(tag):
+    return tag if parse_version(tag) else f"{LEGACY_CHART_PREFIX}{tag}"
+
+
+def bundle_image_tag(tag):
+    return tag if tag.startswith("oci-stable-") or parse_version(tag) else None
+
+
+def bundle_tag_error(tag):
+    if tag == "oci-stable-latest":
+        return ("bundle.tag oci-stable-latest is a moving tag (discovery only) — pin an "
+                "immutable oci-stable-<id> for an install")
+    if tag.startswith(LEGACY_CHART_PREFIX):
+        return (f"bundle.tag {tag} is a chart version, not a bundle tag — use "
+                f"{tag[len(LEGACY_CHART_PREFIX):]}")
+    if parse_version(tag):
+        return None
+    if tag[:1] in ("v", "V") and parse_version(tag[1:]):
+        return f"bundle.tag {tag}: release versions carry no leading 'v' — use {tag[1:]}"
+    if re.match(r"[vV]?[0-9]+\.", tag):
+        return (f"bundle.tag {tag!r} is not a release version — use X.Y.Z or X.Y.Z-rc.N "
+                "(no leading zeros, no build metadata), or an oci-stable-<id>")
+    return None
+
+
+def deployed_chart_version(history):
+    """The chart version of the newest `deployed` revision in `helm history -o json`; a
+    failed upgrade after it leaves the release running this one."""
+    deployed = [h for h in history or [] if isinstance(h, dict) and h.get("status") == "deployed"]
+    if not deployed:
+        return None
+    chart = str(max(deployed, key=lambda h: h.get("revision") or 0).get("chart") or "")
+    prefix = f"{CHART_NAME}-"
+    if not chart.startswith(prefix):
+        return None
+    return chart[len(prefix):] or None
+
+
+def upgrade_verdict(running, target, allow_downgrade=False, allow_breaking=False):
+    if running == target:
+        return [("ok", f"chart {target} is already running — configuration-only upgrade, same images")]
+    r_legacy = str(running or "").startswith(LEGACY_CHART_PREFIX)
+    if str(target).startswith(LEGACY_CHART_PREFIX):
+        if r_legacy:
+            return [("ok", f"running {running} -> {target}")]
+        return [("warn", f"{target} is an oci-stable bundle; those are not version-ordered, so the move "
+                         f"from {running or 'an unread version'} is not checked for a downgrade or a "
+                         "breaking upgrade")]
+    r, t = parse_version(running), parse_version(target)
+    if (r is None and not r_legacy) or t is None:
+        seen = f"is {running}" if running else "could not be read from helm history"
+        if allow_downgrade or allow_breaking:
+            return [("warn", f"the running chart version {seen}; moving to {target} unchecked, "
+                             "allowed by --allow-downgrade/--allow-breaking")]
+        return [("fail", (
+            f"the running chart version {seen}, so the move to {target} cannot be checked "
+            "for a downgrade or a breaking upgrade. Confirm the running version with "
+            f"`helm history {RELEASE} -n {NAMESPACE}`, then re-run with --allow-downgrade or "
+            "--allow-breaking as it applies."
+        ))]
+    out = []
+    if not r_legacy and version_key(t) < version_key(r):
+        if allow_downgrade:
+            out.append(("warn", f"downgrade {running} -> {target}, allowed by --allow-downgrade"))
+        else:
+            out.append(("fail", (
+                f"chart {target} is older than the running {running}. A downgrade runs no "
+                f"migrations back, so it is safe only if {target} reads everything {running} "
+                "wrote; confirm that in the release notes, then re-run with --allow-downgrade."
+            )))
+    if not r_legacy and (t[0] > r[0] or (t[0] == r[0] == 0 and t[1] > r[1])):
+        if allow_breaking:
+            out.append(("warn", f"breaking upgrade {running} -> {target}, allowed by --allow-breaking"))
+        else:
+            out.append(("fail", (
+                f"{running} -> {target} is a breaking upgrade (a major bump, or a minor bump in "
+                "0.x): it is one-way and may change stored data. Read the release notes for "
+                f"{target}, then re-run with --allow-breaking."
+            )))
+    return out or [("ok", f"upgrade {running} -> {target}")]
+
 
 def _helm(ctx, *args):
     return run(["helm", "--kube-context", ctx, "-n", NAMESPACE, *args])
@@ -2057,7 +2163,7 @@ def _continuity_verdict(source, live_id, idx_id, live_dim, dim):
         ok(f"the inputs match {source} on {' and '.join(matched)}")
 
 
-def check_upgrade(inp):
+def check_upgrade(inp, allow_downgrade=False, allow_breaking=False):
     section("UPGRADE: live release")
     ctx = get(inp, "kubeContext")
     rc, out, err = run3(["helm", "--kube-context", ctx, "-n", NAMESPACE, "status", RELEASE, "-o", "json"])
@@ -2080,23 +2186,25 @@ def check_upgrade(inp):
     else:
         ok(f"release '{RELEASE}' is deployed")
 
-    section("UPGRADE: bundle tag")
+    section("UPGRADE: bundle version")
     tag = str(get(inp, "bundle.tag", ""))
-    rc, out = _helm(ctx, "get", "metadata", RELEASE, "-o", "json")
-    running_app = get(_json_or_none(out) or {}, "appVersion", "?") if rc == 0 else "?"
+    rc, out = _helm(ctx, "history", RELEASE, "-o", "json")
+    running = deployed_chart_version(_json_or_none(out) if rc == 0 else None)
     rc, out = _helm(ctx, "get", "values", RELEASE, "-o", "json")
     live_values = (_json_or_none(out) if rc == 0 else None) or {}
-    running_tag = get(live_values, "global.image.tag") or f"(chart {running_app})"
-    if not tag.startswith("oci-stable-"):
+    tag_error = bundle_tag_error(tag)
+    if tag_error:
+        fail(tag_error)
+    elif not bundle_image_tag(tag):
         fail(
-            f"bundle.tag={tag!r} is not a promoted release. Upgrades take an immutable "
-            "oci-stable-<id>; a raw build id would leave the Nexus services on the tags pinned "
-            "inside that chart instead of moving the whole stack together."
+            f"bundle.tag={tag!r} is not a promoted release. Upgrades take a release version "
+            "(X.Y.Z) or an immutable oci-stable-<id>; a raw build id would leave the Nexus "
+            "services on the tags pinned inside that chart."
         )
-    elif tag == running_tag:
-        ok(f"bundle.tag {tag} == running tag — configuration-only upgrade, same images")
     else:
-        ok(f"running {running_tag} -> {tag}")
+        report = {"ok": ok, "warn": warn, "fail": fail}
+        for level, msg in upgrade_verdict(running, chart_version(tag), allow_downgrade, allow_breaking):
+            report[level](msg)
 
     section("UPGRADE: index id + dimension continuity")
     idx_id = str(get(inp, "staticIndex.id", ""))
@@ -2166,9 +2274,13 @@ def check_live(inp):
     is_acr = acr.endswith(".azurecr.io")
     manifest = os.path.join(_gen_dir, "manifest.txt")
     if not os.path.exists(manifest):
+        env = ""
+        if os.path.abspath(_gen_dir) != os.path.join(HERE, "generated"):
+            env = f"GEN_DIR={shlex.quote(_gen_dir)} "
         warn(
-            "no generated/manifest.txt — run `./image-manifest.sh --list --chart-path <chart>` "
-            "first to record the exact refs the install pulls; skipping presence check"
+            f"no {manifest} — run `{env}./image-manifest.sh --list` (add `--source <registry>` "
+            "if the bundle is not in your registry yet) first to record the exact refs the "
+            "install pulls; skipping presence check"
         )
     elif not (sub and acr_name and is_acr):
         # a pull-through registry caches on first pull; there is no tag list to check
@@ -2413,6 +2525,134 @@ def _check_federation(inp):
         ok(f"all {len(BLOB_SERVICE_ACCOUNTS)} blob-accessing SAs federated on UAMI '{name}'")
 
 
+def _check(failures, condition, message):
+    if not condition:
+        failures.append(message)
+
+
+def self_test():
+    failures = []
+    for v in ("0.1.0", "1.0.0", "10.2.3", "1.0.0-rc.0", "1.0.0-rc.12"):
+        _check(failures, parse_version(v) is not None, f"rejected {v}")
+    for v in ("v1.0.0", "1.0", "01.0.0", "1.0.0+abc", "1.0.0-rc.01", "1.0.0-rc", "1.0.0-beta.1",
+              "1.0.0-rc.1.1", "1.0.0\n", " 1.0.0", "0.0.0-bundle.oci-stable-x", "oci-stable-ab12", "", None):
+        _check(failures, parse_version(v) is None, f"accepted {v!r}")
+
+    ordered = ["0.1.0", "0.1.1", "1.0.0-rc.1", "1.0.0-rc.2", "1.0.0-rc.10", "1.0.0", "1.0.1", "1.1.0", "2.0.0", "10.0.0"]
+    for lo, hi in zip(ordered, ordered[1:]):
+        _check(failures, version_key(parse_version(lo)) < version_key(parse_version(hi)), f"{lo} !< {hi}")
+
+    _check(failures, chart_version("1.0.0-rc.1") == "1.0.0-rc.1", "release chart version")
+    _check(failures, chart_version("oci-stable-ab12") == "0.0.0-bundle.oci-stable-ab12", "alias chart version")
+    _check(failures, chart_version("main-abc1234") == "0.0.0-bundle.main-abc1234", "raw chart version")
+    _check(failures, bundle_image_tag("1.0.0") == "1.0.0", "release image tag")
+    _check(failures, bundle_image_tag("oci-stable-ab12") == "oci-stable-ab12", "alias image tag")
+    _check(failures, bundle_image_tag("main-abc1234") is None, "raw build pinned the image tag")
+    _check(failures, bundle_image_tag("0.0.0-bundle.oci-stable-x") is None, "chart version pinned the image tag")
+
+    for tag in ("1.0.0", "1.0.0-rc.2", "oci-stable-ab12", "main-abc1234", "1ad6e68"):
+        _check(failures, bundle_tag_error(tag) is None, f"rejected tag {tag}")
+    for tag, hint in (
+        ("oci-stable-latest", "moving tag"),
+        ("0.0.0-bundle.oci-stable-x", "use oci-stable-x"),
+        ("v1.0.0", "use 1.0.0"),
+        ("1.0", "X.Y.Z-rc.N"),
+        ("01.0.0", "X.Y.Z-rc.N"),
+        ("1.0.0+abc", "X.Y.Z-rc.N"),
+        ("1.0.0-rc.01", "X.Y.Z-rc.N"),
+        ("1.0.0\n", "X.Y.Z-rc.N"),
+        ("v1.0", "X.Y.Z-rc.N"),
+    ):
+        error = bundle_tag_error(tag)
+        _check(failures, error is not None and hint in error, f"tag {tag!r}: {error}")
+
+    history = [
+        {"revision": 1, "status": "superseded", "chart": "nexus-installer-0.0.0-bundle.oci-stable-a"},
+        {"revision": 2, "status": "deployed", "chart": "nexus-installer-1.2.0"},
+        {"revision": 3, "status": "failed", "chart": "nexus-installer-1.3.0"},
+    ]
+    _check(failures, deployed_chart_version(history) == "1.2.0", "a failed revision hid the deployed one")
+    _check(failures, deployed_chart_version(list(reversed(history))) == "1.2.0", "history order mattered")
+    _check(failures, deployed_chart_version(history[:1]) is None, "no deployed revision was read")
+    _check(failures, deployed_chart_version([{"revision": 1, "status": "deployed", "chart": "other-1.0.0"}]) is None,
+           "another chart's version was read")
+    _check(failures, deployed_chart_version(None) is None, "unreadable history was read")
+    twice = [{"revision": 2, "status": "deployed", "chart": "nexus-installer-1.2.0"},
+             {"revision": 5, "status": "deployed", "chart": "nexus-installer-1.4.0"}]
+    for order in (twice, twice[::-1]):
+        _check(failures, deployed_chart_version(order) == "1.4.0", "an older deployed revision won")
+    _check(failures, deployed_chart_version(history[:1] + [{"revision": 4, "status": "deployed",
+                                                             "chart": "nexus-installer-0.0.0-bundle.oci-stable-b"}])
+           == "0.0.0-bundle.oci-stable-b", "legacy chart version")
+
+    def levels(running, target, **allow):
+        return sorted(level for level, _ in upgrade_verdict(running, target, **allow))
+
+    alias_a, alias_b = "0.0.0-bundle.oci-stable-a", "0.0.0-bundle.oci-stable-b"
+    cases = [
+        ("1.0.0", "1.0.0", {}, ["ok"]),
+        ("0.1.0", "0.1.0", {}, ["ok"]),
+        (alias_a, "0.2.0-rc.1", {}, ["ok"]),
+        ("0.1.0", "0.1.1", {}, ["ok"]),
+        ("0.1.1-rc.1", "0.1.1", {}, ["ok"]),
+        ("0.2.0-rc.1", "0.2.0", {}, ["ok"]),
+        ("0.2.0-rc.1", "0.2.0-rc.2", {}, ["ok"]),
+        ("0.1.3", "0.2.0", {}, ["fail"]),
+        ("0.1.3", "0.2.0-rc.1", {}, ["fail"]),
+        ("0.1.3", "0.2.0", {"allow_downgrade": True}, ["fail"]),
+        ("0.1.3", "0.2.0", {"allow_breaking": True}, ["warn"]),
+        ("0.9.4", "1.0.0", {}, ["fail"]),
+        ("0.2.0", "0.1.3", {}, ["fail"]),
+        ("0.2.0", "0.1.3", {"allow_downgrade": True}, ["warn"]),
+        ("0.1.1", "0.1.1-rc.1", {}, ["fail"]),
+        ("0.1.0", alias_a, {}, ["warn"]),
+        (alias_a, alias_a, {}, ["ok"]),
+        (alias_b, alias_a, {}, ["ok"]),
+        (alias_b, alias_a, {"allow_downgrade": True}, ["ok"]),
+        ("0.0.0-bundle.main-abc1234", alias_a, {}, ["ok"]),
+        (alias_a, "1.0.0", {}, ["ok"]),
+        (alias_a, "1.0.0-rc.1", {}, ["ok"]),
+        (alias_a, "2.3.0", {}, ["ok"]),
+        (alias_a, "0.1.0", {}, ["ok"]),
+        ("0.0.0-bundle.main-abc1234", "1.0.0", {}, ["ok"]),
+        ("1.0.0", "1.0.3", {}, ["ok"]),
+        ("1.0.0", "1.4.0", {}, ["ok"]),
+        ("1.0.0-rc.2", "1.0.0", {}, ["ok"]),
+        ("1.0.0-rc.1", "1.0.0-rc.2", {}, ["ok"]),
+        ("1.0.3", "1.0.0", {}, ["fail"]),
+        ("1.0.3", "1.0.0", {"allow_downgrade": True}, ["warn"]),
+        ("1.0.0", "1.0.0-rc.2", {}, ["fail"]),
+        ("1.0.0", alias_a, {}, ["warn"]),
+        ("2.1.0", alias_a, {"allow_breaking": True}, ["warn"]),
+        ("1.0.0", alias_a, {"allow_downgrade": True}, ["warn"]),
+        ("2.1.0", "1.5.0", {}, ["fail"]),
+        ("2.1.0", "1.5.0", {"allow_downgrade": True}, ["warn"]),
+        ("1.2.0", "2.0.0", {}, ["fail"]),
+        ("1.2.0", "2.0.0-rc.1", {}, ["fail"]),
+        ("1.2.0", "2.0.0", {"allow_downgrade": True}, ["fail"]),
+        ("1.2.0", "2.0.0", {"allow_breaking": True}, ["warn"]),
+        ("2.0.0-rc.1", "2.0.0", {}, ["ok"]),
+        (None, "1.0.0", {}, ["fail"]),
+        (None, alias_a, {}, ["warn"]),
+        ("1.0.0+abc", alias_a, {}, ["warn"]),
+        (None, "1.0.0", {"allow_downgrade": True}, ["warn"]),
+        (None, "1.0.0", {"allow_breaking": True}, ["warn"]),
+        ("1.0.0+abc", "1.0.0", {}, ["fail"]),
+    ]
+    for running, target, allow, want in cases:
+        got = levels(running, target, **allow)
+        _check(failures, got == want, f"{running} -> {target} {allow}: {got}, want {want}")
+
+    for flag in ("--allow-downgrade", "--allow-breaking"):
+        rc, _, err = run3([sys.executable, os.path.abspath(__file__), flag, "-f", os.devnull])
+        _check(failures, rc == 2 and "--upgrade" in err, f"{flag} without --upgrade: rc={rc}")
+
+    for failure in failures:
+        print(f"FAIL: {failure}", file=sys.stderr)
+    print(f"self-test: {len(failures)} failure(s)", file=sys.stderr)
+    return 1 if failures else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Preflight consistency validation for a Nexus install.")
     ap.add_argument("-f", "--inputs", default=os.path.join(HERE, "customer.yaml"))
@@ -2421,7 +2661,13 @@ def main():
     ap.add_argument("--live", action="store_true", help="also run cloud/cluster checks (az/kubectl)")
     ap.add_argument("--upgrade", action="store_true",
                     help="also check the live release can take this render (deployed state, "
-                         "promoted tag, same index id + dimension); needs helm/kubectl access")
+                         "promoted release, upgrade direction, same index id + dimension); "
+                         "needs helm/kubectl access")
+    ap.add_argument("--allow-downgrade", action="store_true",
+                    help="with --upgrade, accept a bundle older than the running release")
+    ap.add_argument("--allow-breaking", action="store_true",
+                    help="with --upgrade, accept a breaking upgrade (a major bump, or a minor bump in 0.x)")
+    ap.add_argument("--self-test", action="store_true", help="verify the version rules and exit")
     ap.add_argument("--live-gateway", action="store_true",
                     help="also mint a gateway token and make one real chat + embedding "
                          "(and rerank, when coversRerank) call (needs the client "
@@ -2433,6 +2679,10 @@ def main():
                     help="also make one real chat + embedding + rerank call straight at "
                          "the provider (needs the inference.*KeyEnv vars in this shell)")
     args = ap.parse_args()
+    if args.self_test:
+        sys.exit(self_test())
+    if (args.allow_downgrade or args.allow_breaking) and not args.upgrade:
+        ap.error("--allow-downgrade and --allow-breaking only apply with --upgrade")
 
     global _gen_dir
     _gen_dir = args.gen_dir
@@ -2484,7 +2734,7 @@ def main():
         if args.live_models and catalog:
             check_live_models(inp)
         if args.upgrade:
-            check_upgrade(inp)
+            check_upgrade(inp, args.allow_downgrade, args.allow_breaking)
 
     print()
     skipped = f", {_skips} skipped" if _skips else ""

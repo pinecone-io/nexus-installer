@@ -7,21 +7,29 @@
 #
 # The image list, with tags, comes from the chart render: `helm template` is the source of
 # truth for what the install pulls. With --chart-path DIR it renders that local checkout;
-# without it, it pulls the OCI chart from your own registry (registry.base) into a temp dir
-# and renders that — the same chart install.sh pulls, so no route to Pinecone is needed
-# (`helm registry login <registry.base host>` first if you are not already logged in).
+# without it, it pulls the OCI chart into a temp dir and renders that. The chart comes from
+# --source when given, so a new bundle can be listed and mirrored before any of it is in
+# your registry; otherwise from your own registry (registry.base) — the same chart
+# install.sh pulls, so no route to Pinecone is needed. helm uses its own login
+# (`helm registry login <host>` first if you are not already logged in).
 #
 # By default the output lists the DEST refs (<registry.base>/<name>:<tag>) you must have
 # present — "confirm these are staged". `--source REGISTRY` adds the "copy FROM" column.
 #
-# --copy mirrors the whole bundle FROM --source INTO registry.base (--source required).
+# --copy mirrors the whole bundle, chart included, FROM --source INTO registry.base
+# (--source required).
 # Engine auto-detects crane|skopeo; --engine to force. Log in to both registries first —
 # this tool never reads a key:
 #     gcloud auth print-access-token | crane auth login <source-host> -u oauth2accesstoken --password-stdin
 #     aws ecr get-login-password     | crane auth login <registry.base host> -u AWS --password-stdin
+# With --source, helm pulls the chart from the source too. helm falls back to Docker's
+# credential store, which `crane auth login` / `docker login` fill, so that login covers it;
+# skopeo keeps its own auth file, so with --engine skopeo also run
+#     helm registry login <source-host>
 #
 # Usage: ./image-manifest.sh [--list] [--copy] [--engine crane|skopeo] [--chart-path DIR] [--source REGISTRY]
 set -euo pipefail
+INPUTS_GIVEN="${INPUTS_FILE:-}"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 CHART_PATH=""
@@ -64,18 +72,27 @@ bounded() {
 }
 run_bounded() { bounded "$PULL_TIMEOUT" "$@"; }
 
-# The chart is pulled from registry.base — the same single artifact install.sh installs
+# The chart is pulled from --source when given (a new bundle is not in registry.base until
+# it is mirrored), else from registry.base — the same single artifact install.sh installs
 # from — so a customer never needs a route to Pinecone's registry. helm authenticates to
 # an OCI registry with its own stored credential, not the cloud CLI's. A Google Artifact
 # Registry host (*.pkg.dev / *.gcr.io) takes a short-lived access token piped into `helm
 # registry login`; other registries take a plain login.
-DEST_HOST="${REGISTRY_BASE%%/*}"
-case "$DEST_HOST" in
+CHART_REGISTRY="${SOURCE:-$REGISTRY_BASE}"
+CHART_HOST="${CHART_REGISTRY%%/*}"
+case "$CHART_HOST" in
   *.pkg.dev|*.gcr.io|gcr.io)
-    LOGIN_HINT="gcloud auth print-access-token | helm registry login $DEST_HOST -u oauth2accesstoken --password-stdin" ;;
+    LOGIN_HINT="gcloud auth print-access-token | helm registry login $CHART_HOST -u oauth2accesstoken --password-stdin" ;;
   *)
-    LOGIN_HINT="helm registry login $DEST_HOST" ;;
+    LOGIN_HINT="helm registry login $CHART_HOST" ;;
 esac
+if [ -n "$SOURCE" ]; then
+  STAGE_HINT="ensure $SOURCE carries nexus-installer:$CHART_VERSION (is bundle.tag right?),
+        or drop --source to list from $REGISTRY_BASE once the bundle is mirrored there"
+else
+  STAGE_HINT="ensure the bundle (chart included) is mirrored into $REGISTRY_BASE first,
+        or pass --source <registry> to read the chart from the registry you mirror from"
+fi
 
 PULL_TMP=""
 # return 0 so an empty PULL_TMP (the --chart-path case) does not become the exit status.
@@ -88,23 +105,23 @@ trap 'echo >&2; exit 130' INT TERM
 if [ -z "$CHART_PATH" ]; then
   PULL_TMP="$(mktemp -d)"
   err="$PULL_TMP/pull.err"
-  log "pulling OCI chart oci://$REGISTRY_BASE/nexus-installer:$CHART_VERSION to derive the image list…"
+  log "pulling OCI chart oci://$CHART_REGISTRY/nexus-installer:$CHART_VERSION to derive the image list…"
   # Do not close helm's stdin: an authenticated OCI pull against GAR hangs under </dev/null
   # though a bare pull is instant. run_bounded is the hang guard instead. stderr is captured
   # so the failure reason surfaces in the message below.
   rc=0
-  run_bounded helm pull "oci://$REGISTRY_BASE/nexus-installer" --version "$CHART_VERSION" \
+  run_bounded helm pull "oci://$CHART_REGISTRY/nexus-installer" --version "$CHART_VERSION" \
     --untar --untardir "$PULL_TMP" 2>"$err" || rc=$?
   if [ "$rc" -ne 0 ]; then
     timed_out=""
     [ "$rc" -eq 124 ] && timed_out="
-      (timed out after ${PULL_TIMEOUT}s — likely no route to $DEST_HOST; raise PULL_TIMEOUT if the link is just slow)"
-    die "could not pull the OCI chart oci://$REGISTRY_BASE/nexus-installer --version $CHART_VERSION:
+      (timed out after ${PULL_TIMEOUT}s — likely no route to $CHART_HOST; raise PULL_TIMEOUT if the link is just slow)"
+    die "could not pull the OCI chart oci://$CHART_REGISTRY/nexus-installer --version $CHART_VERSION:
 $(sed 's/^/      /' "$err" 2>/dev/null)$timed_out
     The image list is derived from the chart render, so a reachable chart is required. Either:
-      - log helm in to your registry (helm uses its own credential, not the cloud CLI's):
+      - log helm in to $CHART_HOST (helm uses its own credential, not the cloud CLI's):
           $LOGIN_HINT
-      - ensure the bundle (chart included) is mirrored into $REGISTRY_BASE first
+      - $STAGE_HINT
       - or pass a local chart checkout:  $0 --list --chart-path DIR"
   fi
   CHART_PATH="$PULL_TMP/nexus-installer"
@@ -114,13 +131,13 @@ fi
 # Render once, up front: both the dest list and the upstream-repo summary read from it,
 # and templating a multi-subchart bundle is the expensive step. Render against registry.base
 # so image refs already carry the dest prefix.
-# Set global.image.tag from an oci-stable-<id> bundle tag exactly as gen-values does, else
-# the manifest lists tags the install won't pull.
+# Set global.image.tag from a release version or oci-stable-<id> bundle tag exactly as
+# gen-values does, else the manifest lists tags the install won't pull.
 TAG_ARGS=()
-case "$BUNDLE_TAG" in oci-stable-*) TAG_ARGS+=(--set "global.image.tag=$BUNDLE_TAG") ;; esac
+case "$BUNDLE_TAG" in oci-stable-*|"$CHART_VERSION") TAG_ARGS+=(--set "global.image.tag=$BUNDLE_TAG") ;; esac
 RENDERED=$(helm template nexus "$CHART_PATH" \
   --set global.image.registry="$REGISTRY_BASE" \
-  "${TAG_ARGS[@]}" \
+  ${TAG_ARGS[@]+"${TAG_ARGS[@]}"} \
   --set nexus.auth.jwtSecret=x --set nexus.config.byocSessionCredential=x 2>/dev/null)
 
 # Every image ref (incl. the FoundationDB server image) surfaces as an `image:` field
@@ -129,8 +146,8 @@ RENDERED=$(helm template nexus "$CHART_PATH" \
 # for) is --source, so the bare name+tag is all the caller needs.
 render_refs() {
   {
-    printf '%s\n' "$RENDERED" | grep -oE 'image: "?[^"]+' | sed -E 's/^image: "?//'
-    printf '%s\n' "$RENDERED" | grep -oE '[A-Za-z0-9._/-]+/nexus_runtime:[A-Za-z0-9._-]+'
+    printf '%s\n' "$RENDERED" | { grep -oE 'image: "?[^"]+' || true; } | sed -E 's/^image: "?//'
+    printf '%s\n' "$RENDERED" | { grep -oE '[A-Za-z0-9._/-]+/nexus_runtime:[A-Za-z0-9._-]+' || true; }
   } | while IFS= read -r ref; do [ -n "$ref" ] && printf '%s\n' "${ref##*/}"; done | sort -u
 }
 
@@ -237,7 +254,9 @@ mirror_bundle() {
     ACR: 'az acr login' updates Docker's keychain — crane reads it, skopeo does not; with skopeo run '$login $host'."
   done
   log "mirror complete: $total/$total artifacts staged in $REGISTRY_BASE"
-  log "verify: python3 $HERE/preflight.py --live"
+  local inputs="<customer.yaml>"
+  [ -n "$INPUTS_GIVEN" ] && inputs="$(printf '%q' "$INPUTS_GIVEN")"
+  log "verify: python3 $(printf '%q' "$HERE/preflight.py") -f $inputs --gen-dir $(printf '%q' "$GEN_DIR") --live"
 }
 
 if [ "$COPY" -eq 1 ]; then mirror_bundle; fi

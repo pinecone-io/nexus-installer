@@ -105,10 +105,15 @@ pip install 'litellm==1.96.2'              # optional, once: adds the model-id c
 helm registry login <registry.base host>                    # your registry
 ./image-manifest.sh --list
 
-# 3. (Optional) Not staged? Mirror the bundle from Pinecone's registry into your own —
-#    one-time; arrange source access with Pinecone first (`--help` covers auth). Then re-run
-#    step 2 to confirm it now resolves from your registry:
-./image-manifest.sh --copy --source <Pinecone source registry> --chart-path /path/to/chart
+# 3. (Optional) Not staged? Mirror the bundle, chart included, from Pinecone's registry into
+#    your own — one-time; arrange source access with Pinecone first (`--help` covers auth).
+#    With --source the chart is read from the source, so nothing needs to be staged first.
+#    helm reads that source login from Docker's credential store, which `crane auth login`
+#    or `docker login` fills; skopeo keeps its own, so with --engine skopeo also run
+#    `helm registry login <source host>`. Then re-run step 2 to confirm it now resolves
+#    from your registry:
+crane auth login <source host> ...                           # source registry (see --help)
+./image-manifest.sh --copy --source <Pinecone source registry>
 
 # 4. Optional live checks (containers, image presence, identity in the cloud):
 python3 preflight.py --live
@@ -172,11 +177,12 @@ configures. The important ones:
   needs `clientId`, the user-assigned managed identity).
 - `registry.base` — the flat base every image and the chart live under; becomes the
   chart's single `global.image.registry` knob.
-- `bundle.tag` — identifies the release. Every Nexus image shares the promoted
-  `oci-stable-<id>` (immutable) tag; the FoundationDB and DB images carry their own pinned
-  tag. `image-manifest.sh` lists every image ref to mirror. The chart resolves to
-  `0.0.0-bundle.oci-stable-<id>`. Use `oci-stable-latest` for discovery only (it moves —
-  don't pin an install to it). Upgrading is editing this one line (see "Upgrading").
+- `bundle.tag` — identifies the release: a release version such as `0.1.0` or `0.2.0-rc.1`
+  (no leading `v`), or a promoted `oci-stable-<id>` (immutable). Every Nexus image shares that
+  tag; the FoundationDB and DB images carry their own pinned tag. `image-manifest.sh` lists
+  every image ref to mirror. A release version is also the chart version; `oci-stable-<id>`
+  resolves to chart `0.0.0-bundle.oci-stable-<id>`. Use `oci-stable-latest` for discovery only
+  (it moves — don't pin an install to it). Upgrading is editing this one line (see "Upgrading").
 
 Secrets never appear here. A `*Env` field names the environment variable that holds the
 secret; the tools read it from your shell and never log it.
@@ -270,9 +276,10 @@ Live (`--live`, opt-in, needs `az`/`kubectl` + the `azure.*` inputs):
   credential covers the release service account.
 
 Upgrade (`--upgrade`, run by `install.sh --upgrade`, needs `helm`/`kubectl` access to the
-release): the release exists and is `deployed`, `bundle.tag` is a promoted `oci-stable-<id>`,
-and the index id and dimension in your inputs equal the ones the running release was
-installed with and serves.
+release): the release exists and is `deployed`, `bundle.tag` is a release version or a
+promoted `oci-stable-<id>`, the move is neither a downgrade nor a breaking version jump
+(unless allowed; a move to an `oci-stable-<id>` is not version-checked, see "Upgrading"), and the index id and dimension in your inputs equal the
+ones the running release was installed with and serves.
 
 Before anything is applied, `install.sh` also renders the resolved chart and checks that both
 halves of the install carry your `staticIndex.id` and `embedding.dimension` — the data plane it
@@ -370,9 +377,9 @@ in particular `staticIndex.id` and `embedding.dimension`, which the running inde
 to and which an upgrade cannot change.
 
 ```bash
-$EDITOR customer.yaml                      # bundle.tag: the new oci-stable-<id> Pinecone gives you
+$EDITOR customer.yaml                      # bundle.tag: the new release Pinecone gives you
 python3 gen-values.py                      # regenerate inputs for the new bundle
-./image-manifest.sh --copy --source <Pinecone source registry> --chart-path /path/to/chart   # mirror the new bundle, as in Quick start step 3
+./image-manifest.sh --copy --source <Pinecone source registry>   # mirror the new bundle, as in Quick start step 3
 ./image-manifest.sh --list                 # confirm it resolves from your registry
 ./install.sh --upgrade --dry-run           # preflight + render check + server-side dry-run; applies nothing
 ./install.sh --upgrade                     # same secrets in your shell as for the install
@@ -383,9 +390,20 @@ python3 gen-values.py                      # regenerate inputs for the new bundl
 provider keys must be exported in your shell exactly as for the install (it checks their
 names up front). The release credentials are the ones already in `.secrets.env`; if that
 file is gone, the script recovers them from the release and rewrites the file. It refuses
-to run when the release is not in `deployed` state, when `bundle.tag` is not a promoted
-`oci-stable-<id>`, or when the index id or dimension differ from what the running release
-serves — each with the reason printed.
+to run when the release is not in `deployed` state, when `bundle.tag` is neither a release
+version nor a promoted `oci-stable-<id>`, or when the index id or dimension differ from what
+the running release serves — each with the reason printed.
+
+A breaking release bumps the major version, or the minor version while it is `0.x`
+(`0.1.3` → `0.2.0`); a patch bump (`0.1.0` → `0.1.1`) is not breaking. A breaking upgrade is
+one-way. `install.sh --upgrade` refuses one unless you pass `--allow-breaking`, and refuses a
+move to an older version unless you pass `--allow-downgrade`; it reads the running version
+from the last deployed revision in `helm history`, and when it cannot, it refuses a release
+version target unless one of the two is given. Read the release notes before passing either. Moving from an
+`oci-stable-<id>` to any release version, or to another `oci-stable-<id>`, is a plain
+upgrade. `oci-stable-<id>` bundles are not version-ordered, so a move to one from a release
+version, or from a running version that cannot be read, is never refused; preflight prints
+a warning and proceeds.
 
 Expect roughly two minutes during which the API does not answer while the pods roll to the
 new images; sessions and data are unaffected. Verify the upgrade by the images the pods run:
@@ -414,6 +432,9 @@ credentials. Any of those is a new install.
 - **Mirroring the bundle.** Staging the bundle into `registry.base` is a one-time step you
   arrange with Pinecone ahead of time — they grant your identity read on their source
   registry, then you copy the bundle across with `./image-manifest.sh --copy` (or your own
-  pipeline). `--list --source <registry>` previews the `dest <- FROM` mapping without copying.
+  pipeline). With `--source`, `--copy` reads the chart from the source registry and mirrors
+  it along with the images, so a new bundle needs nothing staged by hand first;
+  `--list --source <registry>` prints the same `dest <- FROM` mapping without copying. Plain
+  `--list` reads the chart from your registry, so it is the check that the bundle is staged.
 - Expect ~20 helm client warnings like `hides previous definition of …` during install
   — they are by design and harmless.
