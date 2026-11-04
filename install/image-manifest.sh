@@ -146,8 +146,8 @@ RENDERED=$(helm template nexus "$CHART_PATH" \
 # for) is --source, so the bare name+tag is all the caller needs.
 render_refs() {
   {
-    printf '%s\n' "$RENDERED" | grep -oE 'image: "?[^"]+' | sed -E 's/^image: "?//'
-    printf '%s\n' "$RENDERED" | grep -oE '[A-Za-z0-9._/-]+/nexus_runtime:[A-Za-z0-9._-]+'
+    printf '%s\n' "$RENDERED" | { grep -oE 'image: "?[^"]+' || true; } | sed -E 's/^image: "?//'
+    printf '%s\n' "$RENDERED" | { grep -oE '[A-Za-z0-9._/-]+/nexus_runtime:[A-Za-z0-9._-]+' || true; }
   } | while IFS= read -r ref; do [ -n "$ref" ] && printf '%s\n' "${ref##*/}"; done | sort -u
 }
 
