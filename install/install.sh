@@ -90,10 +90,26 @@ OVERLAYS=(
 )
 if [ -n "$EXTRA_VALUES" ]; then
   [ -f "$EXTRA_VALUES" ] || die "--extra-values not a file: $EXTRA_VALUES"
+  EXTRA_ERR="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from preflight import extra_values_architecture_error; print(extra_values_architecture_error(sys.argv[2]) or "")' \
+    "$HERE" "$EXTRA_VALUES")" || die "could not check --extra-values $EXTRA_VALUES"
+  [ -z "$EXTRA_ERR" ] || die "$EXTRA_ERR"
   OVERLAYS+=( -f "$EXTRA_VALUES" )
   warn "layering --extra-values $EXTRA_VALUES over the generated overlays"
 fi
 HELM_KUBE=(helm --kube-context "$KUBE_CONTEXT")
+
+CHART_PULLED=0
+if [ "${ARCHITECTURE:-}" = ha ]; then
+  ARCH_DIR="$(mktemp -d)"
+  helm pull "$CHART_REF" "${VERSION_ARGS[@]}" --untar --untardir "$ARCH_DIR" >/dev/null \
+    || { rm -rf "$ARCH_DIR"; die "could not pull $CHART_REF --version $CHART_VERSION to check architecture=ha (need 'helm registry login $REGISTRY_SERVER'? is the bundle mirrored?)"; }
+  ARCH_ERR="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from preflight import chart_architecture_error; print(chart_architecture_error(sys.argv[2], sys.argv[3]) or "")' \
+    "$HERE" "$ARCH_DIR/nexus-installer" ha)" || { rm -rf "$ARCH_DIR"; die "could not check the chart schema for architecture=ha"; }
+  rm -rf "$ARCH_DIR"
+  CHART_PULLED=1
+  [ -z "$ARCH_ERR" ] || die "$ARCH_ERR"
+  log "customer.yaml architecture=ha: chart $CHART_VERSION declares it"
+fi
 
 # --- 2. every secret the run needs must be in the environment ----------------
 # An upgrade re-sends every provider key, so its dry-run checks them too.
@@ -283,7 +299,8 @@ RENDER="$GEN_DIR/render.yaml"
 log "rendering $CHART_REF $CHART_VERSION"
 helm template "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
   -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$PLACEHOLDER_VALUES_FILE" > "$RENDER" \
-  || die "could not render $CHART_REF --version $CHART_VERSION (need 'helm registry login $REGISTRY_SERVER'? is the bundle mirrored?)"
+  || { [ "$CHART_PULLED" = 1 ] && die "chart render failed; see the error above"
+       die "could not render $CHART_REF --version $CHART_VERSION; see the error above (if the pull failed: need 'helm registry login $REGISTRY_SERVER'? is the bundle mirrored?)"; }
 python3 - "$RENDER" "$STATIC_INDEX_ID" "$EMBED_DIMENSION" "$CHART_VERSION" "$HERE" <<'PY' || die "the bundle cannot serve the requested static index (see above)"
 import json
 import sys
@@ -394,6 +411,7 @@ if [ "$DRY_RUN" = 1 ]; then
     release   : $RELEASE
     chart     : $CHART_REF ${VERSION_ARGS[*]:-}
     overlays  : values.install.yaml, $STORAGE_VALUES, values.self-hosted.yaml
+    arch      : ${ARCHITECTURE:-(chart default)}
     secrets   : (real run) pull=$PULL_SECRET_NAME, storage=$STORAGE_EXISTING_SECRET, + provider keys via a temp values file (0600, deleted on exit)
 EOF
   log "dry-run complete."

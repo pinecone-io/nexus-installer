@@ -55,6 +55,11 @@ bundle:
 # --- Sizing ------------------------------------------------------------------
 sizing: small                            # [DEFAULT] the only supported class
 
+# --- Architecture ------------------------------------------------------------
+# Leave unset for the chart default (standalone). ha needs a bundle whose chart supports
+# it; install.sh refuses ha against one that does not.
+# architecture: standalone                # [DEFAULT] standalone | ha
+
 # --- Static index ------------------------------------------------------------
 # The one index the whole stack shares. Mint the id ONCE per install (`uuidgen`) and
 # never change it afterwards — every stored document is keyed to it.
