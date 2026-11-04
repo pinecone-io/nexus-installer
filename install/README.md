@@ -105,10 +105,15 @@ pip install 'litellm==1.96.2'              # optional, once: adds the model-id c
 helm registry login <registry.base host>                    # your registry
 ./image-manifest.sh --list
 
-# 3. (Optional) Not staged? Mirror the bundle from Pinecone's registry into your own —
-#    one-time; arrange source access with Pinecone first (`--help` covers auth). Then re-run
-#    step 2 to confirm it now resolves from your registry:
-./image-manifest.sh --copy --source <Pinecone source registry> --chart-path /path/to/chart
+# 3. (Optional) Not staged? Mirror the bundle, chart included, from Pinecone's registry into
+#    your own — one-time; arrange source access with Pinecone first (`--help` covers auth).
+#    With --source the chart is read from the source, so nothing needs to be staged first.
+#    helm reads that source login from Docker's credential store, which `crane auth login`
+#    or `docker login` fills; skopeo keeps its own, so with --engine skopeo also run
+#    `helm registry login <source host>`. Then re-run step 2 to confirm it now resolves
+#    from your registry:
+crane auth login <source host> ...                           # source registry (see --help)
+./image-manifest.sh --copy --source <Pinecone source registry>
 
 # 4. Optional live checks (containers, image presence, identity in the cloud):
 python3 preflight.py --live
@@ -374,7 +379,7 @@ to and which an upgrade cannot change.
 ```bash
 $EDITOR customer.yaml                      # bundle.tag: the new release Pinecone gives you
 python3 gen-values.py                      # regenerate inputs for the new bundle
-./image-manifest.sh --copy --source <Pinecone source registry> --chart-path /path/to/chart   # mirror the new bundle, as in Quick start step 3
+./image-manifest.sh --copy --source <Pinecone source registry>   # mirror the new bundle, as in Quick start step 3
 ./image-manifest.sh --list                 # confirm it resolves from your registry
 ./install.sh --upgrade --dry-run           # preflight + render check + server-side dry-run; applies nothing
 ./install.sh --upgrade                     # same secrets in your shell as for the install
@@ -427,6 +432,9 @@ credentials. Any of those is a new install.
 - **Mirroring the bundle.** Staging the bundle into `registry.base` is a one-time step you
   arrange with Pinecone ahead of time — they grant your identity read on their source
   registry, then you copy the bundle across with `./image-manifest.sh --copy` (or your own
-  pipeline). `--list --source <registry>` previews the `dest <- FROM` mapping without copying.
+  pipeline). With `--source`, `--copy` reads the chart from the source registry and mirrors
+  it along with the images, so a new bundle needs nothing staged by hand first;
+  `--list --source <registry>` prints the same `dest <- FROM` mapping without copying. Plain
+  `--list` reads the chart from your registry, so it is the check that the bundle is staged.
 - Expect ~20 helm client warnings like `hides previous definition of …` during install
   — they are by design and harmless.
