@@ -78,11 +78,11 @@ load_inputs_env
 PREFLIGHT_ARGS=()
 if [ "$UPGRADE" = 1 ]; then
   log "running static + upgrade preflight"
-  PREFLIGHT_ARGS=(--upgrade "${ALLOW_ARGS[@]}")
+  PREFLIGHT_ARGS=(--upgrade ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"})
 else
   log "running static preflight"
 fi
-python3 "$HERE/preflight.py" -f "$INPUTS_FILE" --gen-dir "$GEN_DIR" "${PREFLIGHT_ARGS[@]}" || die "preflight failed — fix the inputs above and re-run"
+python3 "$HERE/preflight.py" -f "$INPUTS_FILE" --gen-dir "$GEN_DIR" ${PREFLIGHT_ARGS[@]+"${PREFLIGHT_ARGS[@]}"} || die "preflight failed — fix the inputs above and re-run"
 
 CHART_REF="oci://$REGISTRY_BASE/nexus-installer"
 VERSION_ARGS=(--version "$CHART_VERSION")
@@ -286,7 +286,7 @@ PLACEHOLDER_VALUES_FILE="$OUT_FILE"
 # --- 5. render the resolved chart and check the data plane it would run -------
 RENDER="$GEN_DIR/render.yaml"
 log "rendering $CHART_REF $CHART_VERSION"
-helm template "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
+helm template ${DEBUG_ARGS[@]+"${DEBUG_ARGS[@]}"} "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
   -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$PLACEHOLDER_VALUES_FILE" > "$RENDER" \
   || die "could not render $CHART_REF --version $CHART_VERSION (need 'helm registry login $REGISTRY_SERVER'? is the bundle mirrored?)"
 python3 - "$RENDER" "$STATIC_INDEX_ID" "$EMBED_DIMENSION" "$CHART_VERSION" "$HERE" <<'PY' || die "the bundle cannot serve the requested static index (see above)"
@@ -365,7 +365,7 @@ server_dry_run() {
   # ensure the target namespace exists. A --dry-run=server persists nothing else.
   kubectl --context "$KUBE_CONTEXT" create namespace "$NAMESPACE" --dry-run=client -o yaml \
     | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null
-  "${HELM_KUBE[@]}" "$HELM_VERB" "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
+  "${HELM_KUBE[@]}" "$HELM_VERB" ${DEBUG_ARGS[@]+"${DEBUG_ARGS[@]}"} "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
     -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$PLACEHOLDER_VALUES_FILE" --dry-run=server > "$GEN_DIR/render.server.yaml"
   log "server-side dry-run accepted by the cluster API ($KUBE_CONTEXT) -> $GEN_DIR/render.server.yaml"
 }
@@ -378,7 +378,7 @@ if [ "$DRY_RUN" = 1 ]; then
   log "helm lint"
   LINT_DIR="$(mktemp -d)"
   if helm pull "$CHART_REF" "${VERSION_ARGS[@]}" --untar --untardir "$LINT_DIR" 2>/dev/null; then
-    helm lint "${DEBUG_ARGS[@]}" "$LINT_DIR/nexus-installer" "${OVERLAYS[@]}" -f "$PLACEHOLDER_VALUES_FILE" >&2 || warn "helm lint reported issues (above)"
+    helm lint ${DEBUG_ARGS[@]+"${DEBUG_ARGS[@]}"} "$LINT_DIR/nexus-installer" "${OVERLAYS[@]}" -f "$PLACEHOLDER_VALUES_FILE" >&2 || warn "helm lint reported issues (above)"
   else
     warn "could not pull the chart to lint (need 'helm registry login $REGISTRY_SERVER'?); skipping lint"
   fi
@@ -433,8 +433,8 @@ if [ "$UPGRADE" = 1 ]; then
 else
   log "helm $HELM_VERB (patient foreground; do NOT Ctrl-C while it waits on the verify hook)"
 fi
-"${HELM_KUBE[@]}" "$HELM_VERB" "${DEBUG_ARGS[@]}" "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
-  -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" --timeout 10m "${HELM_APPLY_ARGS[@]}"
+"${HELM_KUBE[@]}" "$HELM_VERB" ${DEBUG_ARGS[@]+"${DEBUG_ARGS[@]}"} "$RELEASE" "$CHART_REF" "${VERSION_ARGS[@]}" \
+  -n "$NAMESPACE" "${OVERLAYS[@]}" -f "$SECRET_VALUES_FILE" --timeout 10m ${HELM_APPLY_ARGS[@]+"${HELM_APPLY_ARGS[@]}"}
 
 log "$HELM_VERB submitted. Verify: kubectl --context $KUBE_CONTEXT -n $NAMESPACE get pods"
 if [ "$UPGRADE" = 1 ]; then

@@ -137,7 +137,7 @@ TAG_ARGS=()
 case "$BUNDLE_TAG" in oci-stable-*|"$CHART_VERSION") TAG_ARGS+=(--set "global.image.tag=$BUNDLE_TAG") ;; esac
 RENDERED=$(helm template nexus "$CHART_PATH" \
   --set global.image.registry="$REGISTRY_BASE" \
-  "${TAG_ARGS[@]}" \
+  ${TAG_ARGS[@]+"${TAG_ARGS[@]}"} \
   --set nexus.auth.jwtSecret=x --set nexus.config.byocSessionCredential=x 2>/dev/null)
 
 # Every image ref (incl. the FoundationDB server image) surfaces as an `image:` field
