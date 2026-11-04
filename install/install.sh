@@ -82,7 +82,7 @@ if [ "$UPGRADE" = 1 ]; then
 else
   log "running static preflight"
 fi
-python3 "$HERE/preflight.py" -f "$INPUTS_FILE" "${PREFLIGHT_ARGS[@]}" || die "preflight failed — fix the inputs above and re-run"
+python3 "$HERE/preflight.py" -f "$INPUTS_FILE" --gen-dir "$GEN_DIR" "${PREFLIGHT_ARGS[@]}" || die "preflight failed — fix the inputs above and re-run"
 
 CHART_REF="oci://$REGISTRY_BASE/nexus-installer"
 VERSION_ARGS=(--version "$CHART_VERSION")

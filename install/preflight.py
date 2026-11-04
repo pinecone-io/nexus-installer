@@ -2274,9 +2274,13 @@ def check_live(inp):
     is_acr = acr.endswith(".azurecr.io")
     manifest = os.path.join(_gen_dir, "manifest.txt")
     if not os.path.exists(manifest):
+        env = ""
+        if os.path.abspath(_gen_dir) != os.path.join(HERE, "generated"):
+            env = f"GEN_DIR={shlex.quote(_gen_dir)} "
         warn(
-            "no generated/manifest.txt — run `./image-manifest.sh --list --chart-path <chart>` "
-            "first to record the exact refs the install pulls; skipping presence check"
+            f"no {manifest} — run `{env}./image-manifest.sh --list` (add `--source <registry>` "
+            "if the bundle is not in your registry yet) first to record the exact refs the "
+            "install pulls; skipping presence check"
         )
     elif not (sub and acr_name and is_acr):
         # a pull-through registry caches on first pull; there is no tag list to check

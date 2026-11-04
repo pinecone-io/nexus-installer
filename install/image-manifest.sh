@@ -29,6 +29,7 @@
 #
 # Usage: ./image-manifest.sh [--list] [--copy] [--engine crane|skopeo] [--chart-path DIR] [--source REGISTRY]
 set -euo pipefail
+INPUTS_GIVEN="${INPUTS_FILE:-}"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 CHART_PATH=""
@@ -253,7 +254,9 @@ mirror_bundle() {
     ACR: 'az acr login' updates Docker's keychain — crane reads it, skopeo does not; with skopeo run '$login $host'."
   done
   log "mirror complete: $total/$total artifacts staged in $REGISTRY_BASE"
-  log "verify: python3 $HERE/preflight.py --live"
+  local inputs="<customer.yaml>"
+  [ -n "$INPUTS_GIVEN" ] && inputs="$(printf '%q' "$INPUTS_GIVEN")"
+  log "verify: python3 $(printf '%q' "$HERE/preflight.py") -f $inputs --gen-dir $(printf '%q' "$GEN_DIR") --live"
 }
 
 if [ "$COPY" -eq 1 ]; then mirror_bundle; fi
